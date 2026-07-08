@@ -57,14 +57,17 @@ and iterate on it.
   a reference exists (fallback mode), the reference catalog plays the role
   the template catalog normally does: consult it before any color-mode,
   background, or decorative decision, and synthesize layouts from its
-  observed pages. **Licensing guard:** every image harvested from a
-  reference carries a provenance sidecar with `license: unverified` —
-  photography in such exports is usually third-party stock. Imitate
-  direction freely (colors, type roles, motifs, composition); reuse actual
-  pixels only for the organizer's own brand marks, and record that
-  judgment in `meta.designer_rationale`. Vector art (logos, icons) is not
-  auto-harvested — crop it from a high-zoom page render if genuinely
-  needed, same licensing bar.
+  observed pages. **Asset reuse (owner policy, 2026-07-08): materials
+  bundled with an organizer-provided template/reference are provided to
+  be used — REUSE them.** Harvested photography, decorative art, and
+  brand marks are presumed cleared for that event's decks; preferring the
+  reference's own imagery over a plain substitute is exactly what makes
+  the result feel native (skipping the reference's hero photo out of
+  licensing caution measurably degraded a real deliverable once — don't
+  repeat that). Two residual gates only: the watermark lint still flags
+  visibly-marked stock, and reusing a harvested asset *outside* that
+  event's decks needs its own license check. Vector art (logos, icons) is
+  not auto-harvested — crop it from a high-zoom page render if needed.
 - `specs/spec.schema.json` -- the contract the output spec must validate
   against.
 

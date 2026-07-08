@@ -123,5 +123,6 @@ def test_harvests_images_with_licensing_sidecar(extraction):
     sidecar = json.loads(Path(entry["provenance"]).read_text())
     assert sidecar["page"] == 2
     assert Path(sidecar["source_pdf"]).name == "synthetic_reference.pdf"
-    # the licensing guard must travel with every harvested asset
-    assert "license" in sidecar and "unverified" in sidecar["license"].lower()
+    # the licensing note must travel with every harvested asset
+    assert "presumed cleared" in sidecar["license"].lower()
+    assert "watermark" in sidecar["license"].lower()

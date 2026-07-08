@@ -72,13 +72,15 @@ and **rebased onto the real template if one arrives later** (re-run
 template ingestion; the spec's decisions largely survive, the packaging
 changes).
 
-**Licensing guard on reference harvesting**: an organizer's own logo/brand
-marks in a reference are fair to reuse; generic raster art inside a Canva
-export is usually *Canva's stock*, not the organizer's property. Harvested
-reference assets therefore get the same watermark/licensing lint treatment
-as any other asset — palette/typography/motif *direction* is always safe
-to imitate; direct pixel reuse from references needs the existing
-watermark judgment call.
+**Asset reuse from provided materials (owner ruling, 2026-07-08)**:
+assets bundled with an organizer-provided template or reference are
+*provided to be used* — photography, decorative art, and brand marks are
+presumed cleared for that event's decks, and the pipeline should reuse
+them by default (that reuse is precisely what makes a deck feel native;
+an earlier, more conservative reading of this guard cost a real
+deliverable its hero image). Residual gates: the watermark lint still
+flags visibly-marked stock, and reusing a harvested asset *outside* the
+event it was provided for needs its own license check.
 
 ## 3. Owner decisions on record
 

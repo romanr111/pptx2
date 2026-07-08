@@ -61,9 +61,12 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   `out/template_style.json`): page geometry in EMU, per-page dominant
   palette + font names, thumbnails to `out/thumbnails/reference/<slug>/`,
   and harvested raster images to `assets/reference/<slug>/` each with a
-  provenance sidecar whose `license` field marks it unverified (stock-art
-  risk — see `docs/IMPROVEMENT_PLAN.md` §2). Vector art (logos, icons,
-  rules) is *not* harvested — only embedded rasters; check the thumbnails.
+  provenance sidecar. Per owner policy (2026-07-08), assets bundled with
+  provided materials are presumed cleared for that event's decks and
+  should be reused (see `docs/IMPROVEMENT_PLAN.md` §2 — the watermark
+  lint still applies, and reuse outside the event needs its own check).
+  Vector art (logos, icons, rules) is *not* harvested — only embedded
+  rasters; check the thumbnails.
   Where a real `.pptx` template exists, its facts always win; reference
   facts only inform the Decisions layer. Like the template path, a
   human/LLM-written `out/reference_visual_catalog.json` (built by looking

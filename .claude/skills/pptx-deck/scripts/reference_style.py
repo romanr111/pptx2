@@ -39,10 +39,11 @@ PALETTE_COLORS = 6
 MIN_HARVEST_PX = 24  # skip sub-icon-size rasters (rules, textures, bullets)
 
 LICENSE_NOTE = (
-    "unverified — extracted from a design-reference export; the organizer's "
-    "own brand marks are fair to reuse, generic art is often third-party "
-    "stock. Imitate direction freely; gate pixel reuse through the "
-    "watermark/licensing lint (docs/IMPROVEMENT_PLAN.md §2)."
+    "bundled with provided materials — presumed cleared for this event's "
+    "decks (owner policy 2026-07-08: assets shipped inside an organizer-"
+    "provided template/reference are provided to be used). The watermark "
+    "lint still applies, and reuse OUTSIDE this event's decks needs its "
+    "own license check (docs/IMPROVEMENT_PLAN.md §2)."
 )
 
 

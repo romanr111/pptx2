@@ -223,7 +223,7 @@ EMU_PER_INCH = 914400
 MEDIA_CACHE = OUT / "media_cache"
 
 
-def _optimize_image(path, box, fit, media_opt):
+def _optimize_image(path, box, fit, media_opt, anchor="center"):
     """Opt-in media pass (forensic F5): bake cover crops into pixels and
     downscale to the DPI budget. Returns (path_to_embed, effective_fit) —
     originals are never modified; derivatives land in output/media_cache.
@@ -243,11 +243,11 @@ def _optimize_image(path, box, fit, media_opt):
         if fit == "cover" and bake:
             if img_aspect > box_aspect:
                 crop_w = round(ih * box_aspect)
-                x0 = (iw - crop_w) // 2
+                x0 = {"left": 0, "right": iw - crop_w}.get(anchor, (iw - crop_w) // 2)
                 work = img.crop((x0, 0, x0 + crop_w, ih))
             else:
                 crop_h = round(iw / box_aspect)
-                y0 = (ih - crop_h) // 2
+                y0 = {"top": 0, "bottom": ih - crop_h}.get(anchor, (ih - crop_h) // 2)
                 work = img.crop((0, y0, 0 + iw, y0 + crop_h))
             effective_fit = "stretch"  # box matches the baked aspect now
 
@@ -292,22 +292,32 @@ def add_picture_fitted(slide, path, box, fit="stretch", anchor="center",
     derivative before placement.
     """
     if media_opt:
-        path, fit = _optimize_image(path, box, fit, media_opt)
+        path, fit = _optimize_image(path, box, fit, media_opt, anchor=anchor)
     if fit == "stretch":
         return slide.shapes.add_picture(path, *emu_box(box))
     with PILImage.open(path) as img:
         iw, ih = img.size
     if fit == "contain":
         return slide.shapes.add_picture(path, *emu_box(contain_box(box, iw, ih, anchor)))
-    # fit == "cover"
+    # fit == "cover" — anchor picks which side survives the crop
     pic = slide.shapes.add_picture(path, *emu_box(box))
     img_aspect, box_aspect = iw / ih, box["cx"] / box["cy"]
     if img_aspect > box_aspect:
-        crop = (1 - box_aspect / img_aspect) / 2
-        pic.crop_left, pic.crop_right = crop, crop
+        total = 1 - box_aspect / img_aspect
+        if anchor == "left":
+            pic.crop_right = total
+        elif anchor == "right":
+            pic.crop_left = total
+        else:
+            pic.crop_left = pic.crop_right = total / 2
     else:
-        crop = (1 - img_aspect / box_aspect) / 2
-        pic.crop_top, pic.crop_bottom = crop, crop
+        total = 1 - img_aspect / box_aspect
+        if anchor == "top":
+            pic.crop_bottom = total
+        elif anchor == "bottom":
+            pic.crop_top = total
+        else:
+            pic.crop_top = pic.crop_bottom = total / 2
     return pic
 
 

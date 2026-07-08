@@ -55,6 +55,9 @@ def maximal_spec():
             {"id": "img_cover", "type": "image", "z": 3,
              "asset": "assets/wide.png", "fit": "cover",
              "box": {"x": 2000000, "y": 0, "cx": 1000000, "cy": 1000000}},
+            {"id": "img_cover_right", "type": "image", "z": 3,
+             "asset": "assets/wide.png", "fit": "cover", "anchor": "right",
+             "box": {"x": 3200000, "y": 0, "cx": 500000, "cy": 500000}},
             {"id": "img_bleed", "type": "image", "z": 0,
              "asset": "assets/wide.png",
              "box": {"x": -50000, "y": 0, "cx": 1000000, "cy": 1000000,
@@ -164,6 +167,9 @@ def test_image_fit_modes(built):
     assert contain.top + contain.height == 1000000  # bottom-anchored
     # cover: wide image (2:1) center-cropped left/right, box kept exact
     assert 'srcRect l="25000" r="25000"' in xml
+    # cover + anchor:right — the right side survives, all crop on the left
+    # (this was a schema-promised field the builder silently ignored)
+    assert 'srcRect l="50000"/>' in xml
 
 
 def test_shape_fill_gradient_and_line(built):

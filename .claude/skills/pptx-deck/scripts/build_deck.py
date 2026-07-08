@@ -16,6 +16,8 @@ Usage:
       validate only, do not build
 """
 import argparse
+import datetime
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -26,13 +28,20 @@ from PIL import Image as PILImage
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR
 from pptx.util import Emu, Pt
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_packaging import apply_packaging  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 SCHEMA_PATH = PROJECT_ROOT / "specs" / "spec.schema.json"
+DECK_SCHEMA_PATH = PROJECT_ROOT / "specs" / "deck.schema.json"
 OUT = PROJECT_ROOT / "output"
 
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+EP_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/extended-properties}"
 
 
 class SpecError(Exception):
@@ -61,10 +70,11 @@ def validate_spec(spec, project_root=PROJECT_ROOT):
         # further cross-checks assume a schema-valid shape; bail out early
         return errors
 
-    ids = [e["id"] for e in spec["elements"]]
+    ids = ([e["id"] for e in spec["elements"]]
+           + [b["id"] for b in spec.get("image_briefs", [])])
     dupes = {i for i in ids if ids.count(i) > 1}
     if dupes:
-        errors.append(f"duplicate element id(s): {sorted(dupes)}")
+        errors.append(f"duplicate element/brief id(s): {sorted(dupes)}")
     id_set = set(ids)
 
     for el in spec["elements"]:
@@ -72,14 +82,34 @@ def validate_spec(spec, project_root=PROJECT_ROOT):
             asset_path = project_root / el["asset"]
             if not asset_path.is_file():
                 errors.append(f"element '{el['id']}': asset not found: {el['asset']}")
-        if el["type"] in ("table", "chart"):
-            errors.append(f"element '{el['id']}': type '{el['type']}' is reserved, "
+        if el["type"] == "table":
+            n_cols = len(el["table"]["columns_emu"])
+            for ri, row in enumerate(el["table"]["rows"]):
+                if len(row) != n_cols:
+                    errors.append(f"element '{el['id']}': row {ri} has {len(row)} "
+                                   f"cells, expected {n_cols} (columns_emu)")
+        if el["type"] == "chart":
+            errors.append(f"element '{el['id']}': type 'chart' is reserved, "
                            f"not implemented by build_deck.py yet")
 
     if spec.get("background"):
         bg_path = project_root / spec["background"]["asset"]
         if not bg_path.is_file():
             errors.append(f"background: asset not found: {spec['background']['asset']}")
+
+    theme_src = spec.get("packaging", {}).get("theme_source")
+    if theme_src and theme_src["kind"] == "template":
+        tpl = project_root / theme_src["path"]
+        if not tpl.is_file():
+            errors.append(f"packaging: template not found: {theme_src['path']}")
+    for entry in spec.get("packaging", {}).get("embed_fonts", []):
+        slots = [k for k in ("regular", "bold", "italic", "bold_italic") if entry.get(k)]
+        if not slots:
+            errors.append(f"packaging: embed_fonts '{entry['family']}' names no font file")
+        for k in slots:
+            if not (project_root / entry[k]).is_file():
+                errors.append(f"packaging: embed_fonts '{entry['family']}' {k} "
+                               f"file not found: {entry[k]}")
 
     sw, sh = spec["slide"]["width_emu"], spec["slide"]["height_emu"]
     for el in spec["elements"]:
@@ -96,15 +126,68 @@ def validate_spec(spec, project_root=PROJECT_ROOT):
             errors.append(f"element '{el['id']}': box extends past bottom edge "
                            f"without allow_offslide_bleed:bottom")
 
+    acknowledged = set(spec.get("meta", {}).get("acknowledged_briefs", []))
+    absent_briefs = {b["id"] for b in spec.get("image_briefs", [])
+                     if b["id"] in acknowledged
+                     and not (project_root / b["asset"]).is_file()}
     for step in spec.get("animations", []):
         for t in step["targets"]:
             if t not in id_set:
                 errors.append(f"animation step {step['step']}: unknown target id '{t}'")
+            elif t in absent_briefs:
+                errors.append(f"animation step {step['step']}: target '{t}' is an "
+                               f"acknowledged unfilled brief — it won't exist on the "
+                               f"slide, so it can't be animated")
         if step["effect"] != "fade":
             errors.append(f"animation step {step['step']}: effect '{step['effect']}' "
                            f"not yet implemented by build_deck.py (fade only for now)")
+        # reject rather than silently ignore what the builder can't execute
+        if step.get("trigger", "click") != "click":
+            errors.append(f"animation step {step['step']}: trigger '{step['trigger']}' "
+                           f"not yet implemented by build_deck.py (click only for now)")
+        if step.get("direction") is not None:
+            errors.append(f"animation step {step['step']}: 'direction' only applies to "
+                           f"wipe/fly effects, which are not implemented yet")
 
     return errors
+
+
+def validate_deck(deck, project_root=PROJECT_ROOT):
+    """Deck-schema validation + member-slide loading/validation.
+
+    Returns (errors, slide_specs). slide_specs is empty when errors exist.
+    """
+    errors = []
+    schema = json.loads(DECK_SCHEMA_PATH.read_text())
+    validator_cls = jsonschema.validators.validator_for(schema)
+    for err in validator_cls(schema).iter_errors(deck):
+        errors.append(f"deck schema: {err.message} "
+                      f"(at {'/'.join(str(p) for p in err.path)})")
+    if errors:
+        return errors, []
+
+    if deck.get("packaging"):
+        # deck packaging must satisfy the slide schema's packaging shape
+        pkg_schema = load_schema()["properties"]["packaging"]
+        for err in jsonschema.Draft202012Validator(pkg_schema).iter_errors(deck["packaging"]):
+            errors.append(f"deck packaging: {err.message}")
+
+    slide_specs = []
+    for path_str in deck["slides"]:
+        path = project_root / path_str
+        if not path.is_file():
+            errors.append(f"deck: slide spec not found: {path_str}")
+            continue
+        spec = json.loads(path.read_text())
+        for e in validate_spec(spec, project_root):
+            errors.append(f"{path_str}: {e}")
+        if (spec["slide"]["width_emu"] != deck["slide"]["width_emu"]
+                or spec["slide"]["height_emu"] != deck["slide"]["height_emu"]):
+            errors.append(f"{path_str}: slide is "
+                          f"{spec['slide']['width_emu']}x{spec['slide']['height_emu']} EMU, "
+                          f"deck demands {deck['slide']['width_emu']}x{deck['slide']['height_emu']}")
+        slide_specs.append(spec)
+    return errors, ([] if errors else slide_specs)
 
 
 def emu_box(box):
@@ -136,13 +219,80 @@ def contain_box(box, img_w, img_h, anchor="center"):
     return {"x": x, "y": y, "cx": cx, "cy": cy}
 
 
-def add_picture_fitted(slide, path, box, fit="stretch", anchor="center"):
+EMU_PER_INCH = 914400
+MEDIA_CACHE = OUT / "media_cache"
+
+
+def _optimize_image(path, box, fit, media_opt):
+    """Opt-in media pass (forensic F5): bake cover crops into pixels and
+    downscale to the DPI budget. Returns (path_to_embed, effective_fit) —
+    originals are never modified; derivatives land in output/media_cache.
+    """
+    dpi = media_opt.get("dpi_budget", 200)
+    quality = media_opt.get("jpeg_quality", 88)
+    bake = media_opt.get("bake_crops", True)
+    target_w = box["cx"] / EMU_PER_INCH * dpi
+    target_h = box["cy"] / EMU_PER_INCH * dpi
+
+    with PILImage.open(path) as img:
+        iw, ih = img.size
+        img_aspect, box_aspect = iw / ih, box["cx"] / box["cy"]
+        work = None
+        effective_fit = fit
+
+        if fit == "cover" and bake:
+            if img_aspect > box_aspect:
+                crop_w = round(ih * box_aspect)
+                x0 = (iw - crop_w) // 2
+                work = img.crop((x0, 0, x0 + crop_w, ih))
+            else:
+                crop_h = round(iw / box_aspect)
+                y0 = (ih - crop_h) // 2
+                work = img.crop((0, y0, 0 + iw, y0 + crop_h))
+            effective_fit = "stretch"  # box matches the baked aspect now
+
+        base = work if work is not None else img
+        # 1.3x headroom: don't churn files for marginal savings
+        if base.size[0] > target_w * 1.3 and base.size[1] > target_h * 1.3:
+            scale = max(target_w / base.size[0], target_h / base.size[1])
+            new_size = (max(1, round(base.size[0] * scale)),
+                        max(1, round(base.size[1] * scale)))
+            base = base.resize(new_size, PILImage.LANCZOS)
+            work = base
+
+        if work is None:
+            return path, fit  # nothing worth doing
+
+        has_alpha = work.mode in ("RGBA", "LA", "PA") or (
+            work.mode == "P" and "transparency" in work.info)
+        stamp = hashlib.sha256(
+            f"{path}|{Path(path).stat().st_mtime_ns}|{fit}|{dpi}|{quality}|"
+            f"{box['cx']}x{box['cy']}".encode()).hexdigest()[:16]
+        MEDIA_CACHE.mkdir(parents=True, exist_ok=True)
+        if has_alpha:
+            out_path = MEDIA_CACHE / f"{stamp}.png"
+            if not out_path.is_file():
+                work.save(out_path, format="PNG", optimize=True)
+        else:
+            out_path = MEDIA_CACHE / f"{stamp}.jpg"
+            if not out_path.is_file():
+                work.convert("RGB").save(out_path, format="JPEG",
+                                         quality=quality, optimize=True)
+        return str(out_path), effective_fit
+
+
+def add_picture_fitted(slide, path, box, fit="stretch", anchor="center",
+                       media_opt=None):
     """fit:"stretch" (default) preserves the exact prior behavior (always
     stretch to box.cx/cy). fit:"contain" places the image at its natural
     aspect ratio, anchored within the box (letterboxed, never distorted).
     fit:"cover" fills the box exactly via python-pptx's crop_* properties
-    (symmetric center crop), never distorted either.
+    (symmetric center crop), never distorted either. media_opt (the spec's
+    packaging.media_optimization) may swap in a baked/downscaled
+    derivative before placement.
     """
+    if media_opt:
+        path, fit = _optimize_image(path, box, fit, media_opt)
     if fit == "stretch":
         return slide.shapes.add_picture(path, *emu_box(box))
     with PILImage.open(path) as img:
@@ -194,6 +344,73 @@ def build_shape(slide, el):
     return shp
 
 
+def _set_cell_border(cell, color_hex, width_pt):
+    """Uniform grid border on one cell (lnL/lnR/lnT/lnB in tcPr)."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    w = str(int(width_pt * 12700))
+    for tag in ("lnL", "lnR", "lnT", "lnB"):
+        el = tcPr.find(A_NS + tag)
+        if el is not None:
+            tcPr.remove(el)
+        ln = etree.SubElement(tcPr, A_NS + tag)
+        ln.set("w", w)
+        fill = etree.SubElement(ln, A_NS + "solidFill")
+        srgb = etree.SubElement(fill, A_NS + "srgbClr")
+        srgb.set("val", color_hex.upper())
+        # OOXML: line elements must precede fill in tcPr
+        tcPr.insert(0, ln)
+
+
+def build_table(slide, el):
+    """Data table, fully styled from the spec (no theme table styles)."""
+    t = el["table"]
+    style = t["style"]
+    rows, cols = t["rows"], t["columns_emu"]
+    gf = slide.shapes.add_table(len(rows), len(cols), *emu_box(el["box"]))
+    table = gf.table
+    # kill banding flags so the spec's explicit fills are the only styling
+    table.first_row = False
+    table.horz_banding = False
+    for j, w in enumerate(cols):
+        table.columns[j].width = Emu(w)
+    if t.get("row_height_emu"):
+        for row in table.rows:
+            row.height = Emu(t["row_height_emu"])
+
+    has_header = t.get("header", True)
+    for i, row_vals in enumerate(rows):
+        is_header = has_header and i == 0
+        for j, text in enumerate(row_vals):
+            cell = table.cell(i, j)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            p = cell.text_frame.paragraphs[0]
+            run = p.add_run()
+            run.text = text
+            style_run(run, {
+                "font": style["font"],
+                "size_pt": style["size_pt"],
+                "color": style.get("header_color", style["text_color"])
+                          if is_header else style["text_color"],
+                "bold": style.get("header_bold", True) if is_header else False,
+            })
+            fill = None
+            if is_header:
+                fill = style.get("header_fill")
+            elif style.get("alt_row_fill") is not None and (i - int(has_header)) % 2 == 1:
+                fill = style.get("alt_row_fill")
+            else:
+                fill = style.get("row_fill")
+            if fill:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = RGBColor.from_string(fill)
+            else:
+                cell.fill.background()
+            if style.get("border_color"):
+                _set_cell_border(cell, style["border_color"],
+                                 style.get("border_pt", 0.75))
+    return gf
+
+
 def set_body_props(tf, wrap="none", insets_zero=True):
     bodyPr = tf._txBody.find(A_NS + "bodyPr")
     if insets_zero:
@@ -225,6 +442,11 @@ def apply_bullet(paragraph, bullet):
     hang = bullet["hang_emu"]
     pPr.set("marL", str(hang))
     pPr.set("indent", str(-hang))
+    # child order matters in CT_TextParagraphProperties: buClr < buFont < buChar
+    if bullet.get("color"):
+        buClr = etree.SubElement(pPr, A_NS + "buClr")
+        srgb = etree.SubElement(buClr, A_NS + "srgbClr")
+        srgb.set("val", bullet["color"].upper())
     buFont = etree.SubElement(pPr, A_NS + "buFont")
     buFont.set("typeface", bullet["font"])
     buChar = etree.SubElement(pPr, A_NS + "buChar")
@@ -277,7 +499,7 @@ TIMING_TEMPLATE_TAIL = (
 )
 
 
-def effect_par(cid, spid, node_type, dur_ms=500):
+def effect_par(cid, spid, node_type, dur_ms):
     """Fade entrance; the only effect build_deck.py implements today."""
     return (
         f'<p:par><p:cTn id="{cid}" presetID="10" presetClass="entr" presetSubtype="0" '
@@ -296,9 +518,9 @@ def effect_par(cid, spid, node_type, dur_ms=500):
 
 
 def build_timing(clicks):
-    """clicks: list of lists of shape ids; each inner list = one click step."""
+    """clicks: list of (shape_ids, duration_ms); each entry = one click step."""
     xml, cid = TIMING_TEMPLATE_HEAD, 3
-    for shape_ids in clicks:
+    for shape_ids, dur_ms in clicks:
         xml += (f'<p:par><p:cTn id="{cid}" fill="hold">'
                 f'<p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst>')
         cid += 1
@@ -306,11 +528,12 @@ def build_timing(clicks):
                 f'<p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>')
         cid += 1
         for j, spid in enumerate(shape_ids):
-            xml += effect_par(cid, spid, "clickEffect" if j == 0 else "withEffect")
+            xml += effect_par(cid, spid, "clickEffect" if j == 0 else "withEffect",
+                              dur_ms=dur_ms)
             cid += 3
         xml += '</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>'
     bld = ('<p:bldLst>' + ''.join(
-        f'<p:bldP spid="{s}" grpId="0"/>' for c in clicks for s in c) + '</p:bldLst>')
+        f'<p:bldP spid="{s}" grpId="0"/>' for c, _ in clicks for s in c) + '</p:bldLst>')
     return xml + TIMING_TEMPLATE_TAIL.format(bld=bld)
 
 
@@ -323,10 +546,139 @@ def visible_ids_for_state(spec, state):
     for step in spec.get("animations", []):
         for t in step["targets"]:
             earliest_step[t] = min(earliest_step.get(t, step["step"]), step["step"])
-    all_ids = {e["id"] for e in spec["elements"]}
+    all_ids = ({e["id"] for e in spec["elements"]}
+               | {b["id"] for b in spec.get("image_briefs", [])})
     if state is None:
         return all_ids
     return {i for i in all_ids if i not in earliest_step or earliest_step[i] <= state}
+
+
+def stamp_doc_props(prs, spec, n_slides=1):
+    """Professional package metadata: without this, every deliverable ships
+    python-pptx's frozen boilerplate ('Steve Canny', 2013 dates, 'generated
+    using python-pptx', 'On-screen Show (4:3)', 'Slides: 0')."""
+    dp = spec.get("meta", {}).get("doc_props", {})
+    core = prs.core_properties
+    core.title = dp.get("title", "")
+    core.author = dp.get("author", "")
+    core.subject = dp.get("subject", "")
+    core.last_modified_by = dp.get("author", "")
+    spec_hash = hashlib.sha256(
+        json.dumps(spec, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+    core.comments = f"built by pptx2 build_deck.py; spec sha256:{spec_hash}"
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
+    core.created = now
+    core.modified = now
+    core.revision = 1
+
+    # p:sldSz keeps type="screen4x3" from the stock scaffold even at 16:9
+    sldSz = prs.slides._sldIdLst.getparent().find(P_NS + "sldSz")
+    if sldSz is not None and "type" in sldSz.attrib:
+        del sldSz.attrib["type"]
+
+    # docProps/app.xml is a plain (non-XML-mapped) part in python-pptx
+    ratio = spec["slide"]["width_emu"] / spec["slide"]["height_emu"]
+    if abs(ratio - 16 / 9) < 0.01:
+        fmt = "On-screen Show (16:9)"
+    elif abs(ratio - 4 / 3) < 0.01:
+        fmt = "On-screen Show (4:3)"
+    else:
+        fmt = "Custom"
+    for part in prs.part.package.iter_parts():
+        if str(part.partname) == "/docProps/app.xml":
+            root = etree.fromstring(part.blob)
+            for tag, val in ((EP_NS + "Slides", str(n_slides)),
+                             (EP_NS + "PresentationFormat", fmt),
+                             (EP_NS + "Application", "pptx2 (python-pptx)")):
+                el = root.find(tag)
+                if el is not None:
+                    el.text = val
+            part._blob = etree.tostring(root, xml_declaration=True,
+                                        encoding="UTF-8", standalone=True)
+
+
+PLACEHOLDER_FILL = "C9C2B8"
+PLACEHOLDER_INK = "4A443C"
+
+
+def build_brief_placeholder(slide, brief):
+    """Dev-render stand-in for an unfilled, unacknowledged image brief.
+    Deliberately unmissable; lint_render blocks shipping it. Fixed neutral
+    styling — this is tooling output, not a design decision."""
+    shp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, *emu_box(brief["box"]))
+    shp.shadow.inherit = False
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = RGBColor.from_string(PLACEHOLDER_FILL)
+    shp.line.color.rgb = RGBColor.from_string(PLACEHOLDER_INK)
+    shp.line.width = Pt(1.0)
+    tf = shp.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    run = p.add_run()
+    run.text = (f"IMAGE BRIEF '{brief['id']}': {brief['subject']} "
+                f"[{brief['aspect']}, {brief['medical_class']}] -> {brief['asset']}")
+    style_run(run, {"font": "Arial", "size_pt": 12,
+                    "color": PLACEHOLDER_INK, "bold": True})
+    return shp
+
+
+def add_slide_from_spec(prs, spec, state=None, project_root=PROJECT_ROOT,
+                        media_opt=None):
+    """Append one slide described by a slide spec to an open presentation."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    if media_opt is None:
+        media_opt = spec.get("packaging", {}).get("media_optimization")
+
+    if spec.get("background"):
+        add_picture_fitted(slide, str(project_root / spec["background"]["asset"]),
+                           spec["background"]["box"], fit="stretch",
+                           media_opt=media_opt)
+
+    acknowledged = set(spec.get("meta", {}).get("acknowledged_briefs", []))
+    renderables = list(spec["elements"])
+    for brief in spec.get("image_briefs", []):
+        if (project_root / brief["asset"]).is_file():
+            renderables.append({"id": brief["id"], "type": "image",
+                                "asset": brief["asset"], "box": brief["box"],
+                                "z": brief.get("z", 0),
+                                "fit": brief.get("fit", "cover"),
+                                "anchor": brief.get("anchor", "center")})
+        elif brief["id"] not in acknowledged:
+            renderables.append({"id": brief["id"], "type": "_brief_placeholder",
+                                "z": brief.get("z", 0), "box": brief["box"],
+                                "_brief": brief})
+        # acknowledged + missing: ships without it, on purpose
+
+    visible = visible_ids_for_state(spec, state)
+    shape_id_by_el = {}
+    for el in sorted(renderables, key=lambda e: e.get("z", 0)):
+        if el["id"] not in visible:
+            continue
+        if el["type"] == "_brief_placeholder":
+            shape_id_by_el[el["id"]] = build_brief_placeholder(slide, el["_brief"]).shape_id
+            continue
+        if el["type"] == "image":
+            shp = add_picture_fitted(slide, str(project_root / el["asset"]), el["box"],
+                                      fit=el.get("fit", "stretch"), anchor=el.get("anchor", "center"),
+                                      media_opt=media_opt)
+        elif el["type"] == "textbox":
+            shp = build_textbox(slide, el)
+        elif el["type"] == "shape":
+            shp = build_shape(slide, el)
+        elif el["type"] == "table":
+            shp = build_table(slide, el)
+        else:
+            raise SpecError([f"element '{el['id']}': type '{el['type']}' not implemented"])
+        shape_id_by_el[el["id"]] = shp.shape_id
+
+    if state is None:
+        clicks = [([shape_id_by_el[t] for t in step["targets"]],
+                   step.get("duration_ms", 500))
+                  for step in sorted(spec.get("animations", []), key=lambda s: s["step"])]
+        if clicks:
+            timing = etree.fromstring(build_timing(clicks))
+            slide._element.append(timing)
+    return slide
 
 
 def build(spec, state=None, project_root=PROJECT_ROOT):
@@ -336,41 +688,29 @@ def build(spec, state=None, project_root=PROJECT_ROOT):
     prs = Presentation()
     prs.slide_width = Emu(spec["slide"]["width_emu"])
     prs.slide_height = Emu(spec["slide"]["height_emu"])
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    add_slide_from_spec(prs, spec, state=state, project_root=project_root)
+    stamp_doc_props(prs, spec, n_slides=1)
+    return prs
 
-    if spec.get("background"):
-        slide.shapes.add_picture(str(project_root / spec["background"]["asset"]),
-                                  *emu_box(spec["background"]["box"]))
 
-    visible = visible_ids_for_state(spec, state)
-    shape_id_by_el = {}
-    for el in sorted(spec["elements"], key=lambda e: e.get("z", 0)):
-        if el["id"] not in visible:
-            continue
-        if el["type"] == "image":
-            shp = add_picture_fitted(slide, str(project_root / el["asset"]), el["box"],
-                                      fit=el.get("fit", "stretch"), anchor=el.get("anchor", "center"))
-        elif el["type"] == "textbox":
-            shp = build_textbox(slide, el)
-        elif el["type"] == "shape":
-            shp = build_shape(slide, el)
-        else:
-            raise SpecError([f"element '{el['id']}': type '{el['type']}' not implemented"])
-        shape_id_by_el[el["id"]] = shp.shape_id
-
-    if state is None:
-        clicks = [[shape_id_by_el[t] for t in step["targets"]]
-                  for step in sorted(spec.get("animations", []), key=lambda s: s["step"])]
-        if clicks:
-            timing = etree.fromstring(build_timing(clicks))
-            slide._element.append(timing)
-
+def build_deck(deck, slide_specs, project_root=PROJECT_ROOT):
+    """All slides of a deck spec into one presentation, in order."""
+    first = slide_specs[0]
+    prs = Presentation()
+    prs.slide_width = Emu(first["slide"]["width_emu"])
+    prs.slide_height = Emu(first["slide"]["height_emu"])
+    deck_media_opt = deck.get("packaging", {}).get("media_optimization")
+    for spec in slide_specs:
+        add_slide_from_spec(prs, spec, state=None, project_root=project_root,
+                            media_opt=deck_media_opt)
+    stamp_doc_props(prs, deck, n_slides=len(slide_specs))
     return prs
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("spec", type=Path, help="path to a slide spec JSON file")
+    ap.add_argument("spec", type=Path,
+                     help="path to a slide spec or deck spec JSON file")
     ap.add_argument("--states", action="store_true",
                      help="also write per-animation-step static snapshot decks")
     ap.add_argument("--check-only", action="store_true", help="validate only, do not build")
@@ -378,6 +718,27 @@ def main():
     args = ap.parse_args()
 
     spec = json.loads(args.spec.read_text())
+
+    if "deck_version" in spec:
+        errors, slide_specs = validate_deck(spec, PROJECT_ROOT)
+        if errors:
+            print(f"INVALID DECK: {args.spec}", file=sys.stderr)
+            for e in errors:
+                print(f"  - {e}", file=sys.stderr)
+            return 1
+        print(f"valid deck: {args.spec} ({len(slide_specs)} slide(s))")
+        if args.check_only:
+            return 0
+        stem = args.spec.stem.replace(".deck", "")
+        out_path = args.out or (OUT / f"{stem}.pptx")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        prs = build_deck(spec, slide_specs)
+        prs.save(out_path)
+        if spec.get("packaging"):
+            apply_packaging(out_path, spec["packaging"], PROJECT_ROOT)
+        print("wrote", out_path)
+        return 0
+
     errors = validate_spec(spec, PROJECT_ROOT)
     if errors:
         print(f"INVALID SPEC: {args.spec}", file=sys.stderr)
@@ -393,6 +754,8 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs = build(spec, state=None)
     prs.save(out_path)
+    if spec.get("packaging"):
+        apply_packaging(out_path, spec["packaging"], PROJECT_ROOT)
     print("wrote", out_path)
 
     if args.states:
@@ -403,6 +766,8 @@ def main():
             prs_k = build(spec, state=k)
             state_path = states_dir / f"state{k}.pptx"
             prs_k.save(state_path)
+            if spec.get("packaging"):
+                apply_packaging(state_path, spec["packaging"], PROJECT_ROOT)
             print("wrote", state_path)
 
     return 0

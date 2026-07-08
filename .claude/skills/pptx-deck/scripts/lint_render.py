@@ -483,6 +483,102 @@ def check_render_structure(spec, spec_path, lookup, findings):
                 f"{declared_lines} (possible unexpected wrap/clip)"))
 
 
+LICENSE_FILENAMES = ("OFL.txt", "LICENSE", "LICENSE.txt", "LICENSE.md",
+                     "COPYING", "COPYING.txt", "UFL.txt")
+
+
+def check_embed_font_licenses(spec, findings, project_root=PROJECT_ROOT):
+    """Embedding redistributes font software inside a client file. Warn
+    whenever no license evidence sits next to an embedded font file —
+    prompting a human to verify redistribution rights, not blocking."""
+    for entry in spec.get("packaging", {}).get("embed_fonts", []):
+        for key in ("regular", "bold", "italic", "bold_italic"):
+            path = entry.get(key)
+            if not path:
+                continue
+            font_path = project_root / path
+            if not font_path.is_file():
+                continue  # existence is validate_spec's error, not ours
+            search_dirs = [font_path.parent, font_path.parent.parent]
+            if not any((d / n).is_file() for d in search_dirs
+                       for n in LICENSE_FILENAMES):
+                findings.append(finding(
+                    "warn", "embed_font_license", entry["family"],
+                    f"embedding '{path}' with no license file "
+                    f"({'/'.join(LICENSE_FILENAMES[:3])}...) found beside it — "
+                    f"verify redistribution rights before shipping"))
+
+
+def check_image_briefs(spec, findings, project_root=PROJECT_ROOT):
+    """No deck ships with a silent hole: an unfilled brief is an error
+    unless its id is in meta.acknowledged_briefs (an explicit, reviewable
+    'ships without it' decision — then it's a warn-level reminder)."""
+    acknowledged = set(spec.get("meta", {}).get("acknowledged_briefs", []))
+    for brief in spec.get("image_briefs", []):
+        filled = (project_root / brief["asset"]).is_file()
+        if filled:
+            continue
+        if brief["id"] in acknowledged:
+            findings.append(finding(
+                "warn", "image_brief_open", brief["id"],
+                f"brief '{brief['id']}' ({brief['subject']}) acknowledged as "
+                f"shipping unfilled — the slide intentionally has no image here"))
+        else:
+            findings.append(finding(
+                "error", "image_brief_open", brief["id"],
+                f"unfilled image brief '{brief['id']}': wanted '{brief['subject']}' "
+                f"at {brief['asset']} — fill it, or acknowledge shipping without "
+                f"it via meta.acknowledged_briefs"))
+
+
+def _ai_sidecar(asset_path):
+    sidecar = asset_path.with_suffix(asset_path.suffix + ".json")
+    if not sidecar.is_file():
+        sidecar = asset_path.with_suffix(".json")
+    if sidecar.is_file():
+        try:
+            return json.loads(sidecar.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def check_ai_generated_review(spec, findings, project_root=PROJECT_ROOT):
+    """Medical review gate (owner policy, never soften to warn): an
+    AI-generated image classified anatomical is an ERROR until a human
+    sign-off is recorded in meta.image_reviews [{asset, reviewed_by,
+    date}]. Decorative/conceptual AI images get a warn-level reminder.
+    'AI-generated' = asset under assets/generated/ or sidecar says so;
+    medical_class comes from the owning brief, else the sidecar."""
+    reviews = {r.get("asset"): r
+               for r in spec.get("meta", {}).get("image_reviews", [])}
+    class_by_asset = {b["asset"]: b["medical_class"]
+                      for b in spec.get("image_briefs", [])}
+    candidates = ([el["asset"] for el in spec["elements"] if el["type"] == "image"]
+                  + [b["asset"] for b in spec.get("image_briefs", [])])
+    for asset in candidates:
+        path = project_root / asset
+        if not path.is_file():
+            continue
+        sidecar = _ai_sidecar(path)
+        is_ai = asset.startswith("assets/generated/") or sidecar.get("ai_generated")
+        if not is_ai:
+            continue
+        med = class_by_asset.get(asset) or sidecar.get("medical_class", "decorative")
+        review = reviews.get(asset)
+        if med == "anatomical" and not (review and review.get("reviewed_by")):
+            findings.append(finding(
+                "error", "ai_medical_review", asset,
+                f"AI-generated ANATOMICAL image '{asset}' has no recorded human "
+                f"sign-off — add meta.image_reviews entry "
+                f"{{asset, reviewed_by, date}} after a medical review"))
+        elif not review:
+            findings.append(finding(
+                "warn", "ai_review_reminder", asset,
+                f"AI-generated image '{asset}' ({med}) — double-check it before "
+                f"the deck ships; record meta.image_reviews to silence this"))
+
+
 # -------------------------------------------------------------------- main --
 
 def lint(spec_path: Path):
@@ -505,6 +601,9 @@ def lint(spec_path: Path):
     check_contrast(spec, findings)
     check_watermark_usage(spec, assets_json, findings)
     check_asset_duplication(spec, assets_json, findings)
+    check_image_briefs(spec, findings)
+    check_ai_generated_review(spec, findings)
+    check_embed_font_licenses(spec, findings)
     check_render_structure(spec, spec_path, lookup, findings)
 
     return finalize(spec_path, findings)

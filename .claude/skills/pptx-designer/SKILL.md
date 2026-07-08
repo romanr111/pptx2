@@ -48,12 +48,30 @@ and iterate on it.
      computed.
   This is a one-time cost per template, not per slide -- don't redo it for
   every new spec once it exists and isn't stale.
+- `out/design_reference.json` + `out/reference_visual_catalog.json`
+  (optional, present when the event supplied a *design reference* — a PDF
+  look-and-feel export rather than a real template). **Precedence rule:**
+  a real `.pptx` template's facts (`template_style.json`) are
+  authoritative and win wherever both exist; reference facts are advisory
+  direction — palette, typography hints, motifs, layout ideas. When *only*
+  a reference exists (fallback mode), the reference catalog plays the role
+  the template catalog normally does: consult it before any color-mode,
+  background, or decorative decision, and synthesize layouts from its
+  observed pages. **Licensing guard:** every image harvested from a
+  reference carries a provenance sidecar with `license: unverified` —
+  photography in such exports is usually third-party stock. Imitate
+  direction freely (colors, type roles, motifs, composition); reuse actual
+  pixels only for the organizer's own brand marks, and record that
+  judgment in `meta.designer_rationale`. Vector art (logos, icons) is not
+  auto-harvested — crop it from a high-zoom page render if genuinely
+  needed, same licensing bar.
 - `specs/spec.schema.json` -- the contract the output spec must validate
   against.
 
 If `out/assets.json`/`out/template_style.json` don't exist or look stale,
 run `inventory.py` first (see `pptx-deck/SKILL.md`) -- don't guess at facts
-this skill can compute.
+this skill can compute. If the event supplied only a PDF reference, run
+`reference_style.py` instead and work in fallback mode as described above.
 
 ## Forbidden reads
 
@@ -189,12 +207,19 @@ to weigh honestly, not silently work around:
   use either way -- that's a prompt to double check your call, not
   necessarily to remove it.
 - If no candidate actually fits (wrong topic, wrong aspect, all watermarked
-  and none croppable tastefully), don't force one in. Instead record the gap
-  explicitly as `meta.asset_gaps: ["no clean, licensed hero image available
-  for <topic> -- slide ships without one"]`, so a human reviewer knows real
-  art is missing rather than assuming none was needed. A plain-but-honest
-  slide beats a cluttered or copyright-risky one, but "we don't have the
-  right asset" should be visible, not silent.
+  and none croppable tastefully), don't force one in. Instead write a
+  structured **image brief** (`image_briefs[]`, see `pptx-deck/SKILL.md`
+  and the schema): the box where the image belongs, the expected asset
+  path, subject/style constraints locked to the event's palette and mood,
+  aspect, negative constraints, and an honest `medical_class` —
+  anatomical content will be blocked by lint until a human medical
+  sign-off is recorded, and that is the intended behavior, not friction.
+  If the slide should ship without the image for now, add the brief id to
+  `meta.acknowledged_briefs` (the composition must then hold up without
+  it — judge that by eye, don't leave a visual hole). Keep
+  `meta.asset_gaps` for non-image gaps (e.g. a missing organizer logo).
+  A plain-but-honest slide beats a cluttered or copyright-risky one, but
+  "we don't have the right asset" should be executable, not just visible.
 
 **Image placement: natural proportions, not stretch.** `build_deck.py`
 defaults every image to `fit: "stretch"` (fills the exact box, distorting
@@ -277,10 +302,52 @@ verbatim source text -- even whitespace -- gets an entry in
 diff what changed and approve or reject it. If nothing was edited, omit the
 key.
 
+**Packaging: the deck must carry the event's theme, not stock Office.**
+Every spec should set `packaging.theme_source` (see
+`pptx-deck/SKILL.md` and the schema): with a real template, `kind:
+"template"` + the correct `theme_index` chosen from
+`template_style.json.themes[]` (check the theme *name* and colors — the
+first theme is often not the brand one); in fallback mode, `kind:
+"synthesized"` with your explicit palette-to-slot mapping (dk1 = darkest
+text-bearing tone, lt1 = the paper/background tone, accents = brand
+colors by prominence) and the heading/body families as
+major_font/minor_font. Also set `meta.doc_props` (title/author/subject)
+on every client-facing spec — that's what the file's Properties dialog
+shows. Both are Decisions-layer choices; record the mapping rationale.
+
 **Animation.** Only `effect: "fade"` is implemented by `build_deck.py`
 today -- use that or nothing. Omit `trigger`/`duration_ms` on animation
 steps rather than setting values the builder silently ignores; setting them
 would imply a fidelity that doesn't exist.
+
+## Designing a whole deck (outline stage first)
+
+For a multi-slide deck, do NOT jump straight to per-slide specs. Work in
+three passes:
+
+1. **Outline** — read all the speaker's materials, then write the slide
+   breakdown as part of the deck spec's `meta` (e.g.
+   `meta.outline: [{n, purpose, source_blocks, layout_reference}]`): one
+   entry per slide with its *purpose* (what this slide must accomplish),
+   which source text/images/tables it consumes, and which template/
+   reference layout it will adapt. Every source block should be consumed
+   or explicitly skipped — unplaced client material is a silent content
+   loss, list it in `meta.unplaced_material` if anything is left over.
+2. **Tokens** — freeze the deck's design system in `tokens` *before*
+   authoring slides: palette roles, a role-keyed type scale, margins,
+   budgets. Slides then reference roles that must conform; changing your
+   mind mid-deck means updating the token, not slide N in isolation.
+3. **Per-slide specs** — author each slide as usual (everything above),
+   then `build_deck.py specs/<name>.deck.json` + `lint_deck.py` for the
+   cross-slide pass, and review the *whole deck's* renders as a set: do
+   consecutive slides read as one system (same grid, same rhythm), do
+   section-type slides reuse the same motif treatment, does density stay
+   inside the budget?
+
+`lint_deck.py` checks the deck against your own tokens — in fallback
+mode (design-reference events) that makes it the primary conformance
+check, since `lint_render.py`'s theme warns compare against a template
+you're deliberately not using.
 
 ## The build/lint/react loop
 

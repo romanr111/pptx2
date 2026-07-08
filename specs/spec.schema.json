@@ -10,7 +10,7 @@
     "spec_version": { "const": 1 },
     "meta": {
       "type": "object",
-      "description": "Free-text designer intent/rationale. Ignored by the builder, read by a human or critic.",
+      "description": "Free-text designer intent/rationale. Ignored by the builder EXCEPT meta.doc_props {title, author, subject}, which the builder stamps into the .pptx core properties (docProps) so deliverables never ship with library-boilerplate metadata.",
       "additionalProperties": true
     },
     "slide": {
@@ -36,6 +36,79 @@
         }
       ]
     },
+    "packaging": {
+      "type": "object",
+      "description": "Template-native packaging decisions (frozen upstream like everything else): which theme the built package carries in PowerPoint's color/font pickers, and package hygiene. Executed by packaging.apply_packaging after save.",
+      "additionalProperties": false,
+      "properties": {
+        "theme_source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Authoritative path: graft the theme out of the organizer's real .pptx template.",
+              "required": ["kind", "path"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "const": "template" },
+                "path": { "type": "string" },
+                "theme_index": { "type": "integer", "minimum": 0, "default": 0 }
+              }
+            },
+            {
+              "type": "object",
+              "description": "Fallback path for reference-only events: the designer maps the reference palette/typography to theme slots explicitly.",
+              "required": ["kind", "colors"],
+              "additionalProperties": false,
+              "properties": {
+                "kind": { "const": "synthesized" },
+                "name": { "type": "string" },
+                "colors": {
+                  "type": "object",
+                  "required": ["dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6"],
+                  "additionalProperties": false,
+                  "patternProperties": {
+                    "^(dk1|lt1|dk2|lt2|accent[1-6])$": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }
+                  }
+                },
+                "major_font": { "type": "string" },
+                "minor_font": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "strip_unused_layouts": { "type": "boolean", "default": true },
+        "media_optimization": {
+          "type": "object",
+          "description": "Opt-in build-time media pass (forensic F5: metadata-only crops ship full-size pixels). Bakes cover-fit crops into actual pixels and downscales images to a DPI budget before embedding; originals in assets/ are never touched. Omit for byte-faithful embedding.",
+          "additionalProperties": false,
+          "properties": {
+            "dpi_budget": { "type": "number", "exclusiveMinimum": 0, "default": 200 },
+            "jpeg_quality": { "type": "integer", "minimum": 1, "maximum": 100, "default": 88 },
+            "bake_crops": { "type": "boolean", "default": true }
+          }
+        },
+        "max_package_mb": {
+          "type": "number", "exclusiveMinimum": 0,
+          "description": "Deck-size budget; lint_deck warns when the built package exceeds it."
+        },
+        "embed_fonts": {
+          "type": "array",
+          "description": "Fonts to embed into the package (ppt/fonts/*.fntdata + embeddedFontLst) so the deck renders as designed on machines without them installed. Paths are project-root-relative TTFs per style slot. LICENSE GATE: lint warns when no license evidence (OFL.txt/LICENSE/COPYING) sits next to a font file — verify redistribution rights before embedding (Geologica/Noto/Roboto are OFL; HeliosCond's license is unverified).",
+          "items": {
+            "type": "object",
+            "required": ["family"],
+            "additionalProperties": false,
+            "properties": {
+              "family": { "type": "string" },
+              "regular": { "type": "string" },
+              "bold": { "type": "string" },
+              "italic": { "type": "string" },
+              "bold_italic": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
     "elements": {
       "type": "array",
       "items": { "$ref": "#/$defs/element" }
@@ -43,6 +116,38 @@
     "animations": {
       "type": "array",
       "items": { "$ref": "#/$defs/animation_step" }
+    },
+    "image_briefs": {
+      "type": "array",
+      "description": "Structured wanted-but-missing images (the AI-decided 'an image belongs here' judgment, made executable). Filling a brief = drop a file at its `asset` path and rebuild — no spec edit. While the file is missing, the builder renders a labeled placeholder panel so the hole is visible in dev renders, and lint_render errors unless the brief id is listed in meta.acknowledged_briefs (an explicit 'ships without it' decision, which also suppresses the placeholder). AI-generated fills land under assets/generated/ with a provenance sidecar and go through the medical review gate (see lint_render).",
+      "items": {
+        "type": "object",
+        "required": ["id", "box", "asset", "subject", "aspect", "medical_class"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+          "box": { "$ref": "#/$defs/box" },
+          "z": { "type": "integer", "default": 0 },
+          "asset": {
+            "type": "string",
+            "description": "Where the future image file is expected (conventionally assets/generated/<name>.png). Existing file = brief is filled and placed as an image."
+          },
+          "subject": { "type": "string" },
+          "style": {
+            "type": "string",
+            "description": "Style constraints locked to the event's identity: palette, mood, lighting. What a generator or photographer needs to stay on-brand."
+          },
+          "aspect": { "type": "string", "description": "e.g. \"3:4\", \"16:9\"" },
+          "negative": { "type": "string", "default": "no text, no watermarks, no logos" },
+          "medical_class": {
+            "enum": ["decorative", "conceptual", "anatomical"],
+            "description": "Review gating: anatomical AI fills lint as error until a human sign-off is recorded in meta.image_reviews; decorative/conceptual only warn."
+          },
+          "rationale": { "type": "string" },
+          "fit": { "enum": ["stretch", "contain", "cover"], "default": "cover" },
+          "anchor": { "enum": ["top", "bottom", "left", "right", "center"], "default": "center" }
+        }
+      }
     }
   },
   "$defs": {
@@ -96,7 +201,12 @@
               "properties": {
                 "char": { "type": "string", "minLength": 1, "maxLength": 1 },
                 "hang_emu": { "type": "integer", "minimum": 0 },
-                "font": { "type": "string" }
+                "font": { "type": "string" },
+                "color": {
+                  "type": "string",
+                  "pattern": "^[0-9A-Fa-f]{6}$",
+                  "description": "Explicit bullet-mark color. Omitted = renderer default (which differs across PowerPoint/LibreOffice — set this whenever the bullet should match a design color)."
+                }
               }
             }
           ]
@@ -186,9 +296,53 @@
           }
         },
         {
-          "if": { "properties": { "type": { "enum": ["table", "chart"] } } },
+          "if": { "properties": { "type": { "const": "table" } } },
           "then": {
-            "description": "Reserved for a post-MVP phase (client materials include tables/data). Not implemented by build_deck.py yet.",
+            "required": ["table"],
+            "properties": {
+              "table": {
+                "type": "object",
+                "required": ["columns_emu", "rows", "style"],
+                "additionalProperties": false,
+                "properties": {
+                  "columns_emu": {
+                    "type": "array", "minItems": 1,
+                    "items": { "type": "integer", "exclusiveMinimum": 0 }
+                  },
+                  "rows": {
+                    "type": "array", "minItems": 1,
+                    "description": "Row-major cell text. rows[0] is the header when header:true.",
+                    "items": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+                  },
+                  "header": { "type": "boolean", "default": true },
+                  "row_height_emu": { "type": "integer", "exclusiveMinimum": 0 },
+                  "style": {
+                    "type": "object",
+                    "description": "All styling is an upstream decision -- the builder never invents table colors/fonts.",
+                    "required": ["font", "size_pt", "text_color"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "font": { "type": "string" },
+                      "size_pt": { "type": "number", "exclusiveMinimum": 0 },
+                      "text_color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "header_fill": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "header_color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "header_bold": { "type": "boolean", "default": true },
+                      "row_fill": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "alt_row_fill": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "border_color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "border_pt": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "chart" } } },
+          "then": {
+            "description": "Reserved for a later phase. Not implemented by build_deck.py yet -- rejected at validation, never silently ignored.",
             "properties": { "data": { "type": "object" } }
           }
         }

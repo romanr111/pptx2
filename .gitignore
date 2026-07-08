@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+out/
+output/
+
+# Client materials: proprietary template, real photos, real-name specs.
+# Never publish these — see README for how to supply your own.
+assets/
+specs/title_slide*.spec.json
+specs/lint_test_fixtures/title_font_compare.spec.json

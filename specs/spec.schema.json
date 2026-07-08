@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pptx-deck/spec.schema.json",
+  "title": "pptx-deck slide spec",
+  "description": "Everything build_deck.py can execute for one slide, and nothing more. Layout/animation decisions are made upstream (by a human or the designer skill) and frozen into this file.",
+  "type": "object",
+  "required": ["spec_version", "slide", "elements"],
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": { "const": 1 },
+    "meta": {
+      "type": "object",
+      "description": "Free-text designer intent/rationale. Ignored by the builder, read by a human or critic.",
+      "additionalProperties": true
+    },
+    "slide": {
+      "type": "object",
+      "required": ["width_emu", "height_emu"],
+      "additionalProperties": false,
+      "properties": {
+        "width_emu": { "type": "integer", "exclusiveMinimum": 0 },
+        "height_emu": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+    "background": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["asset", "box"],
+          "additionalProperties": false,
+          "properties": {
+            "asset": { "type": "string" },
+            "box": { "$ref": "#/$defs/box" }
+          }
+        }
+      ]
+    },
+    "elements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/element" }
+    },
+    "animations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/animation_step" }
+    }
+  },
+  "$defs": {
+    "box": {
+      "type": "object",
+      "required": ["x", "y", "cx", "cy"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "cx": { "type": "integer", "exclusiveMinimum": 0 },
+        "cy": { "type": "integer", "exclusiveMinimum": 0 },
+        "allow_offslide_bleed": {
+          "type": "array",
+          "items": { "enum": ["top", "bottom", "left", "right"] }
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["text", "font", "size_pt", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string" },
+        "font": { "type": "string" },
+        "size_pt": { "type": "number", "exclusiveMinimum": 0 },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "bold": { "type": "boolean" },
+        "tracking_pt": { "type": "number" }
+      }
+    },
+    "paragraph": {
+      "type": "object",
+      "required": ["lines"],
+      "additionalProperties": false,
+      "properties": {
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/run" }
+        },
+        "line_spacing_pt": { "type": "number", "exclusiveMinimum": 0 },
+        "space_before_pt": { "type": "number", "minimum": 0 },
+        "bullet": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["char", "hang_emu", "font"],
+              "additionalProperties": false,
+              "properties": {
+                "char": { "type": "string", "minLength": 1, "maxLength": 1 },
+                "hang_emu": { "type": "integer", "minimum": 0 },
+                "font": { "type": "string" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "element": {
+      "type": "object",
+      "required": ["id", "type", "box"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "type": { "enum": ["image", "textbox", "table", "chart", "shape"] },
+        "role": {
+          "type": "string",
+          "description": "Free-text semantic tag (title, subtitle, credentials, citation, figure, logo...). Used for cross-slide consistency checks and template-conformance review, not by the builder itself."
+        },
+        "z": { "type": "integer", "default": 0 },
+        "box": { "$ref": "#/$defs/box" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "image" } } },
+          "then": {
+            "required": ["asset"],
+            "properties": {
+              "asset": { "type": "string" },
+              "fit": { "enum": ["stretch", "contain", "cover"], "default": "stretch" },
+              "anchor": {
+                "enum": ["top", "bottom", "left", "right", "center"],
+                "default": "center",
+                "description": "Only meaningful with fit:contain (which side of the box the smaller, aspect-correct image hugs) or fit:cover (which side survives the crop). Ignored for fit:stretch."
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "shape" } } },
+          "then": {
+            "description": "A plain vector shape -- no image asset needed. For decorative accents (e.g. theme-colored dots/bubbles) or solid panels, not for icons or anything needing real detail.",
+            "required": ["shape_type", "fill"],
+            "properties": {
+              "shape_type": { "enum": ["ellipse", "rectangle", "rounded_rectangle"] },
+              "fill": {
+                "type": "object",
+                "required": ["color"],
+                "additionalProperties": false,
+                "properties": {
+                  "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                  "color2": {
+                    "type": "string",
+                    "pattern": "^[0-9A-Fa-f]{6}$",
+                    "description": "If set, a 2-stop linear gradient from color to color2 instead of a solid fill (e.g. a lighter tint to hint at a glossy sphere)."
+                  },
+                  "gradient_angle": { "type": "number", "description": "Degrees, only used when color2 is set." }
+                }
+              },
+              "line": {
+                "oneOf": [
+                  { "type": "null" },
+                  {
+                    "type": "object",
+                    "required": ["color", "width_pt"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+                      "width_pt": { "type": "number", "exclusiveMinimum": 0 }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "textbox" } } },
+          "then": {
+            "required": ["paragraphs"],
+            "properties": {
+              "paragraphs": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/paragraph" }
+              },
+              "wrap": { "enum": ["none", "square"], "default": "none" },
+              "insets_zero": { "type": "boolean", "default": true }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["table", "chart"] } } },
+          "then": {
+            "description": "Reserved for a post-MVP phase (client materials include tables/data). Not implemented by build_deck.py yet.",
+            "properties": { "data": { "type": "object" } }
+          }
+        }
+      ]
+    },
+    "animation_step": {
+      "type": "object",
+      "required": ["step", "targets", "effect"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "type": "integer", "minimum": 1 },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "effect": { "enum": ["fade", "appear", "wipe", "fly"] },
+        "direction": { "enum": ["left", "right", "top", "bottom"] },
+        "trigger": { "enum": ["click", "with_previous", "after_previous"], "default": "click" },
+        "duration_ms": { "type": "integer", "exclusiveMinimum": 0, "default": 500 }
+      }
+    }
+  }
+}

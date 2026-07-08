@@ -1,0 +1,26 @@
+{
+  "spec_version": 1,
+  "meta": { "note": "Throwaway smoke test for the new shape element type and fit:contain/cover + anchor -- not a real slide." },
+  "slide": { "width_emu": 12192000, "height_emu": 6858000 },
+  "elements": [
+    { "id": "bg", "type": "shape", "z": 0, "shape_type": "rectangle",
+      "box": { "x": 0, "y": 0, "cx": 12192000, "cy": 6858000 },
+      "fill": { "color": "FFFFFF" } },
+    { "id": "bubble1", "type": "shape", "z": 1, "shape_type": "ellipse",
+      "box": { "x": 300000, "y": 300000, "cx": 700000, "cy": 700000 },
+      "fill": { "color": "9A8CE8", "color2": "5B49D3", "gradient_angle": 45 } },
+    { "id": "bubble2", "type": "shape", "z": 1, "shape_type": "ellipse",
+      "box": { "x": 300000, "y": 1100000, "cx": 500000, "cy": 500000 },
+      "fill": { "color": "A9D467", "color2": "74A71B" },
+      "line": { "color": "FFFFFF", "width_pt": 1.5 } },
+    { "id": "contain_bottom", "type": "image", "z": 2, "asset": "assets/images/speaker_photo.png",
+      "fit": "contain", "anchor": "bottom",
+      "box": { "x": 2000000, "y": 0, "cx": 4000000, "cy": 6858000 } },
+    { "id": "cover_box", "type": "image", "z": 2, "asset": "assets/images/speaker_photo.png",
+      "fit": "cover",
+      "box": { "x": 7000000, "y": 1000000, "cx": 4500000, "cy": 2500000 } },
+    { "id": "stretch_box", "type": "image", "z": 2, "asset": "assets/images/speaker_photo.png",
+      "box": { "x": 7000000, "y": 4000000, "cx": 4500000, "cy": 1500000 } }
+  ],
+  "animations": []
+}

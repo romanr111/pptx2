@@ -1,0 +1,46 @@
+{
+  "spec_version": 1,
+  "meta": {
+    "note": "Deliberately broken fixture for lint_render.py's negative-path walkthrough. Not a real slide -- exercises font_conformance (bad_font), text_fit (overflow_box), and bbox_overlap (overlap_a/overlap_b)."
+  },
+  "slide": { "width_emu": 12192000, "height_emu": 6858000 },
+  "elements": [
+    {
+      "id": "bad_font",
+      "type": "textbox",
+      "z": 0,
+      "box": { "x": 500000, "y": 500000, "cx": 4000000, "cy": 600000 },
+      "paragraphs": [
+        { "lines": [ { "text": "Bad font test", "font": "TotallyNotARealFont", "size_pt": 24, "color": "000000" } ] }
+      ]
+    },
+    {
+      "id": "overflow_box",
+      "type": "textbox",
+      "z": 0,
+      "box": { "x": 500000, "y": 1500000, "cx": 300000, "cy": 150000 },
+      "paragraphs": [
+        { "lines": [ { "text": "This line of text is far too long to fit in this tiny box", "font": "Geologica Roman", "size_pt": 40, "color": "000000" } ] }
+      ]
+    },
+    {
+      "id": "overlap_a",
+      "type": "textbox",
+      "z": 0,
+      "box": { "x": 2000000, "y": 3000000, "cx": 3000000, "cy": 1000000 },
+      "paragraphs": [
+        { "lines": [ { "text": "Overlap A", "font": "Geologica Roman", "size_pt": 18, "color": "000000" } ] }
+      ]
+    },
+    {
+      "id": "overlap_b",
+      "type": "textbox",
+      "z": 0,
+      "box": { "x": 2200000, "y": 3200000, "cx": 3000000, "cy": 1000000 },
+      "paragraphs": [
+        { "lines": [ { "text": "Overlap B", "font": "Geologica Roman", "size_pt": 18, "color": "000000" } ] }
+      ]
+    }
+  ],
+  "animations": []
+}

@@ -1,0 +1,365 @@
+---
+name: pptx-designer
+description: Author a new slide spec (specs/<name>.spec.json) from the facts layer (out/assets.json, out/template_style.json) and raw slide copy -- the "Decisions" layer of the pptx pipeline. Use when asked to design, draft, or author a slide spec from scratch, as opposed to building/rendering/verifying one that already exists.
+---
+
+# pptx-designer
+
+This is the layer `pptx-deck/SKILL.md` calls "Decisions (a human, or a future
+designer skill)". Everything here is judgment -- which image, which font
+weight, where a box goes, how a long line gets split -- not arithmetic.
+Arithmetic (schema validation, XML generation, rendering) belongs to
+`pptx-deck`'s scripts and is *never* duplicated here; this skill's only job
+is to produce a spec file, then call `pptx-deck`'s scripts to build, lint,
+and iterate on it.
+
+## Inputs
+
+- `out/assets.json` -- image classifications, font facts (including the
+  Geologica naming-trap flags), `font_roles` (heading/body family + which
+  theme they came from), parsed slide-copy text blocks.
+- `out/template_style.json` -- theme colors/fonts, per-layout placeholder
+  geometry, `logo_candidates`, `inferred_margins_emu`, `consistency_flags`,
+  `slide_layout_map` (which layout each real template slide uses),
+  `slide_media_map` (which media files each real slide embeds),
+  `media_reuse_ranked` (media sorted by how many distinct slides reuse it --
+  a high count is a strong signal of a decorative/brand asset, not one-off
+  content).
+- `out/template_visual_catalog.json` -- **read this before making any
+  color-mode, background, or decorative-asset decision.** It's a cached,
+  human/LLM-written description of what the template's own real slides
+  actually look like (grouped by distinct layout, plus notes on recurring
+  visual assets), because `out/template_style.json` alone only tells you
+  numeric facts, not what the template's own designer actually *did* with
+  them. If it doesn't exist yet, or its `n_slides_total` doesn't match the
+  current `out/template_style.json.thumbnails` count, build it first:
+  1. Use `slide_layout_map` to find the distinct layouts actually in use
+     (dedupe by `layouts_index`) -- you don't need to look at every slide,
+     only one representative thumbnail per distinct layout.
+  2. Use `media_reuse_ranked`'s top entries to find slides where a reused
+     asset appears, and look at those thumbnails too.
+  3. For each, look at the thumbnail (`out/thumbnails/template/slide-NN.png`,
+     numbered by presentation order) and write a `layouts_observed` entry
+     (color mode, what's on it, any reusable component you notice) and a
+     `recurring_assets` entry for anything that shows up on more than one
+     slide (note its source media file if `slide_media_map` resolves one --
+     see the caveat below if it doesn't). Keep entries as free descriptive
+     text, not a rigid vocabulary -- this file is written by judgment, not
+     computed.
+  This is a one-time cost per template, not per slide -- don't redo it for
+  every new spec once it exists and isn't stale.
+- `specs/spec.schema.json` -- the contract the output spec must validate
+  against.
+
+If `out/assets.json`/`out/template_style.json` don't exist or look stale,
+run `inventory.py` first (see `pptx-deck/SKILL.md`) -- don't guess at facts
+this skill can compute.
+
+## Forbidden reads
+
+The point of this skill is to make real design judgment calls from facts +
+copy, not to copy a known answer. For any slide where a hand-verified
+reference might exist (as it does for the title slide in this project),
+**do not read**:
+
+- `output/**` in its entirety -- not just `output/work/geometry.json` /
+  `content.json`, but also any built `.pptx` under `output/` (unzipping one
+  reveals exact EMU boxes/fonts/sizes -- the full answer key), anything
+  under `output/compare/`, and anything under `output/work/` (e.g.
+  screenshot-lifted art like `logo_black.png`/`background_title.png` --
+  using either is cheating by construction).
+- Any existing hand-verified spec for the same slide (e.g.
+  `specs/title_slide.spec.json`) or anything under `assets/expected_result/`.
+- `.claude/skills/pptx-deck/scripts/geometry_to_spec.py` -- its module-level
+  constants (`TITLE_FONT`, `TITLE_TRACKING_PT`, `CAP_RATIO`, etc.) are the
+  answer key in code form.
+- `.claude/skills/pptx-title-slide/**` -- its SKILL.md's "Tuning knobs"
+  section states the exact font/tracking choices for the same fixture.
+
+If you're not sure whether a file is off-limits, treat "does this reveal a
+specific pre-computed answer for the slide I'm about to design" as the test,
+not "is it literally on this list."
+
+## Output
+
+A new `specs/<name>.spec.json`. **Never overwrite an existing hand-verified
+spec.** Use `meta.designer_rationale` (one prose string covering image,
+layout, font, and bullet-structure reasoning) and `meta.text_edits` (below)
+so every judgment call is visible to whoever reviews the render, not hidden
+inside the JSON.
+
+## Judgment calls
+
+These are written against this project's actual facts as a worked example;
+apply the same kind of reasoning to different facts on a different template.
+
+**Consult the template's own worked examples before picking a color mode.**
+Don't default to a light/plain treatment just because it's safe -- check
+`out/template_visual_catalog.json` for the layout closest to your slide's
+purpose first. The template's own designer may have used a completely
+different treatment (e.g. a dark background with a large decorative photo)
+than any specific prior client deck you're aware of, and that's an equally
+legitimate reference point, not a deviation to avoid. Concretely, on this
+project's template, the *actual* native title-slide example is dark with a
+large photographic decorative asset -- a fact invisible to `template_style.json`'s
+numeric fields alone (theme colors are just a 12-slot palette; nothing in
+the deterministic facts says which slots the template's own designer
+actually combined for a *title slide specifically*).
+
+**Reuse cross-slide components you spot in the catalog.** If the catalog
+notes a component that recurs across multiple of the template's own slides
+(e.g. a consistently-positioned name+credentials card), matching that
+arrangement is itself a template-conformance signal -- prefer it over
+inventing a new arrangement that's merely "reasonable in isolation."
+
+**Prefer a real recurring template asset over an improvised substitute.**
+If `template_visual_catalog.json`'s `recurring_assets` (or a high entry in
+`media_reuse_ranked`) names something that fits your slide, extract and use
+the real thing via `extract_media.py` rather than approximating it with a
+generic `shape` element -- e.g. a real decorative photo beats a flat
+gradient standing in for it. Reach for `shape` accents (see below) when
+nothing appropriate actually exists in the template's own media, not as a
+first choice when it does.
+
+**Don't trust an empty-looking thumbnail, or a "not found" from `slide_media_map`, at face value.**
+Thumbnails are rendered from a static export and can show a slide's
+*pre-animation* state -- a sparse thumbnail may just mean its content
+animates in, not that the layout is genuinely bare. Separately,
+`slide_media_map`/`media_reuse_ranked` are regex/rels-based and can miss a
+visually obvious asset that's referenced through an indirect or inherited
+mechanism (confirmed on this project: a decorative photo clearly visible on
+two slides only resolved to a media filename via a *third* slide that
+happened to reference it directly). If the catalog's notes describe
+something a mapping doesn't corroborate, trust what's actually visible in
+the thumbnail and look for the asset via *any* slide that uses it, not just
+the one you started from.
+
+**Background + portrait trap.** Check whether your chosen `background_art`
+asset already contains a person/photo baked into it before also placing a
+separate portrait cutout on top -- doing both produces a double-subject.
+Using the composite alone (dropping the separate cutout) can also break an
+animation idea that assumes the person isn't visible until their own step.
+Make an explicit call (e.g. crop the composite to a non-subject panel and
+use the cutout as the only portrait, or use the composite as-is and skip a
+separate portrait-entrance step) and record which, and why, in
+`meta.designer_rationale`. Don't combine both without noticing the
+collision.
+
+**Near-identical portraits.** Two files can be indistinguishable across
+every field `assets.json` measures (size, alpha, dominant colors) without
+being byte-identical -- don't treat `assets.json`'s equality as proof the
+files are the same, and don't use two such files as if they were distinct
+images. Pick one by filename semantics (the more literal/specific name for
+the actual subject) and say which you picked and why.
+
+**Logo selection from `template_style.json.logo_candidates`.** These are
+noisy: a `dark_ink`/`light_ink` classification and an `opaque_frac` number
+are not enough to identify which candidate is actually a usable brand
+wordmark versus, say, a generic app icon or an unrelated graphic that
+happened to pass the extraction heuristics. **Visually inspect** every
+candidate before choosing -- extract each with `extract_media.py` (below)
+and look at the resulting PNGs, or check the template's own thumbnails at
+`out/thumbnails/template/`. Don't pick by `variant`/`opaque_frac` alone.
+Also check the ink color actually works on the background you're placing it
+against -- a `light_ink` (white) logo is invisible on a light slide;
+`extract_media.py --recolor dark|light` can flip it if the shape you want is
+otherwise the right one.
+
+**Duplicate/near-duplicate content illustrations.** If several assets are
+near-identical `content_illustration`s, prefer one, not all -- using
+near-duplicates as if they were different images just multiplies the same
+content pointlessly. Which single one (if any) belongs on *this* slide is
+a hero/thematic-imagery decision -- see below, don't reflexively exclude
+them either.
+
+**Hero/thematic imagery.** A title slide with only a portrait, a logo, and
+text is mechanically fine but visually generic -- a well-designed conference
+title slide usually signals what the talk is about with at least one
+supporting visual, not just a headshot. Actively look for an asset (a
+`content_illustration`, part of a `background_art` composite, anything
+thematically related to the copy) that could serve that role before
+deciding to leave a large region of the canvas empty. Two real constraints
+to weigh honestly, not silently work around:
+- If the only available candidate is `watermark_suspected: true` (stock art,
+  not owned/licensed), don't make it a dominant, clearly-legible centerpiece
+  -- that ships someone else's copyright mark in a client-facing deck. Using
+  it small/subtle/cropped where the mark isn't legible is a judgment call
+  you can make and defend in `meta.designer_rationale`; using it large and
+  legible is not. `lint_render.py`'s `check_watermark_usage` will flag any
+  use either way -- that's a prompt to double check your call, not
+  necessarily to remove it.
+- If no candidate actually fits (wrong topic, wrong aspect, all watermarked
+  and none croppable tastefully), don't force one in. Instead record the gap
+  explicitly as `meta.asset_gaps: ["no clean, licensed hero image available
+  for <topic> -- slide ships without one"]`, so a human reviewer knows real
+  art is missing rather than assuming none was needed. A plain-but-honest
+  slide beats a cluttered or copyright-risky one, but "we don't have the
+  right asset" should be visible, not silent.
+
+**Image placement: natural proportions, not stretch.** `build_deck.py`
+defaults every image to `fit: "stretch"` (fills the exact box, distorting
+aspect ratio if the box doesn't match). That's rarely what a real designed
+slide does with a portrait or hero image. Prefer `fit: "contain"` with an
+explicit `anchor` (e.g. a standing portrait anchored `"bottom"` in a tall
+box, so there's natural headroom above the subject instead of their face
+jammed into the top edge) so the image keeps its real proportions. Use
+`fit: "cover"` (crops to fill without distortion) when you deliberately want
+an image to fill a box edge-to-edge, e.g. a background panel. Reach for
+`stretch` only when the box was chosen specifically to match the image's own
+aspect ratio, not as a default.
+
+**Decorative accent shapes.** When a composition has a large plain region
+that isn't carrying content (see "Hero/thematic imagery"), and no
+appropriate photo/illustration exists to fill it, consider a `type: "shape"`
+element (ellipse/rectangle, solid or 2-stop gradient fill) in the theme's
+own accent colors (`template_style.json.themes[].colors.accent1/2/3...`) as
+a small finishing touch -- a cluster of a few small circles, or a subtle
+gradient panel. This is cheap, always available (no missing-asset risk),
+and ties the slide to the template's actual palette. Keep it subtle and in
+a genuinely empty corner/edge -- a handful of small accents reads as
+"branded," the same shapes scattered everywhere or fighting the main content
+reads as clutter.
+
+**Layout synthesis.** If the template layout matching your slide type has
+few or no usable placeholders, there's nothing to inherit -- you must
+synthesize absolute EMU boxes yourself. `inferred_margins_emu` (a median
+over the *other* layouts' placeholders) is a starting reference grid, not a
+guarantee that it fits your specific composition. Use it plus ordinary
+graphic-design judgment (balance, hierarchy, breathing room), and say so in
+`meta.designer_rationale`.
+
+**Font selection.** `font_roles` (in `out/assets.json`) names a heading and
+body family, but that's a family, not a specific weight or the exact string
+a renderer needs. Two things to get right:
+1. Pick a specific weight deliberately (e.g. for a large title, a bold-ish
+   weight; for body/credential text, a lighter one) and say why.
+2. Cross-check the exact string you write into the spec is an **exact** key
+   in `assets.json.fonts[].family` -- not just "starts with the right
+   name." A font's file can declare a family for XML purposes (its *legacy*
+   name, table id 1) that differs from what you'd guess from the family
+   name alone, especially when a font ships in several stylistic variants
+   (e.g. a plain build, a cursive/alternate build, an auto-axis build) that
+   all superficially match the same theme font name -- only one variant
+   group is normally the sane default a human would reach for from a font
+   menu; the others are for deliberate stylistic use, not a default title
+   font. Check `assets.json.font_naming_trap_flags` for any file you're
+   considering.
+3. Treat `font_roles.heading`/`.body` as a **starting hypothesis to verify by
+   eye, not a rule to follow blindly** -- especially on a template whose
+   `template_style.json.consistency_flags` already show it doesn't reliably
+   follow its own declared theme in practice (this project's template mixes
+   3 themes' fonts on its own slides). The theme's declared major font is
+   sometimes simply not what looks best as a large headline face, even when
+   it's technically "correct." After rendering (see the visual self-review
+   step below), if the declared heading font looks thin/awkward/generic at
+   title size, it's legitimate to pick a bolder weight from the *body* font
+   family instead (still cross-checked against `fonts[].family`) -- record
+   why in `meta.designer_rationale`. `check_font_role_alignment`'s warn on
+   this is advisory precisely so this deviation stays available.
+
+**Bullet formatting.** Slide-copy text blocks that read as bullets in a
+plain-text sense (e.g. dash-prefixed lines) won't necessarily be flagged as
+such by any heuristic field in `assets.json` -- that field is unreliable and
+under-detects single-line bullets. Trust the actual segmented text blocks
+over any boolean flag: each distinct source block that's meant to read as
+one bullet point becomes one spec `paragraph` with a `bullet` set; a
+block's own wrapped continuation lines become additional entries in that
+same paragraph's `lines[]` array, not separate paragraphs (turning them into
+separate paragraphs multiplies the bullet mark, which is wrong). Strip the
+source's own leading bullet marker and any manual indent from the actual
+run text -- the mark and hang come from the spec's `bullet.char` /
+`bullet.hang_emu`, not literal characters.
+
+**Text-edit changelog.** Slide text is pre-written and must be preserved,
+but you may shorten or split a line to make it fit. Any deviation from the
+verbatim source text -- even whitespace -- gets an entry in
+`meta.text_edits: [{element_id, original, final, reason}]`, so a human can
+diff what changed and approve or reject it. If nothing was edited, omit the
+key.
+
+**Animation.** Only `effect: "fade"` is implemented by `build_deck.py`
+today -- use that or nothing. Omit `trigger`/`duration_ms` on animation
+steps rather than setting values the builder silently ignores; setting them
+would imply a fidelity that doesn't exist.
+
+## The build/lint/react loop
+
+```
+build_deck.py specs/<name>.spec.json --states
+lint_render.py specs/<name>.spec.json
+```
+
+Capped at **3 iterations**. Reaction policy, to avoid ping-ponging on
+findings that don't actually indicate a problem:
+
+- `error`-severity findings **must be fixed** before the next iteration.
+- `warn`-severity findings are **advisory** -- react only if you agree with
+  the warning; otherwise leave your choice as-is and record the
+  disagreement in `meta.designer_rationale`. A warn existing is not itself
+  a reason to change something.
+- **Convergence = zero errors** (warns may remain).
+
+Concretely: `check_font_role_alignment` will warn whenever your chosen
+weight doesn't start with the theme's declared family for that role. This
+is expected to fire sometimes -- a theme's declared heading font is an
+*aspirational* target (see `pptx-deck/SKILL.md`'s framing of template
+conformance), not a hard requirement, especially on a template whose own
+`consistency_flags` show it doesn't consistently follow its own theme
+either. Don't treat every such warn as something to fix; use judgment, and
+write down your reasoning either way.
+
+## Mandatory visual self-review (this is the actual quality bar, not the lint)
+
+Zero lint errors only proves the spec is *mechanically* sound -- text fits,
+nothing overlaps, fonts resolve. It says nothing about whether the slide
+looks like a finished conference deck or like plain text dropped onto a
+white rectangle. **Passing lint is a prerequisite for review, not the
+finish line.**
+
+Once `lint_render.py` reports zero errors, build the final full-deck render
+(`state=None` -- the normal `build_deck.py <spec>` output, not a
+per-animation-step state file) and **actually look at the rendered PNG**.
+Critique it honestly against the same things a human designer would check,
+before anyone else sees it:
+
+- **Composition/hierarchy** -- does the eye land on the title first, then
+  speaker, then credentials? Is visual weight balanced across the canvas, or
+  is one side dense and another dead?
+- **Whitespace vs. emptiness** -- deliberate breathing room reads as
+  "designed"; a large blank region with nothing happening in it reads as
+  "unfinished." If roughly a third or more of the canvas is empty for no
+  reason, that's a signal to add something (thematic imagery, an accent
+  shape -- see the judgment calls above) or resize the composition.
+- **Does it say anything about the topic?** -- logo + portrait + text alone
+  is functional but generic. Did you actually consider available thematic
+  imagery before leaving the slide plain (see "Hero/thematic imagery")?
+- **Typography feel** -- does the title read as a confident headline, or as
+  body text that's merely bigger? This is a judgment call a lint check
+  cannot make; only looking at the render can.
+- **Brand presence** -- does the theme's palette show up anywhere besides
+  the logo?
+
+If it doesn't hold up, **keep iterating** -- adjust geometry, fonts, or add
+accents, then rebuild and re-render -- exactly like reacting to a lint
+error, just judged by eye instead of by script. A spec that lints clean but
+looks plain is not done. This step is what actually determines whether the
+output is "ready to go," not the JSON report.
+
+Once both the lint and the visual review hold up (or 3 iterations reached),
+hand the render to a human for final **design quality and template
+conformance** sign-off -- not a pixel-similarity check against any specific
+reference screenshot. Every real slide's ideal content differs; the target
+is *matching the quality bar* (composition, typography, finish) of a
+well-designed example, not reproducing one.
+
+## Tools this skill calls (owned by `pptx-deck`, not duplicated here)
+
+- `inventory.py` -- regenerates the facts layer if stale.
+- `extract_media.py <template.pptx> <ppt/media/imageN.png> <out.png>
+  [--recolor dark|light]` -- materializes a chosen template-embedded logo
+  (or any other template media) as a real on-disk file your spec's `asset`
+  field can point at.
+- `build_deck.py`, `lint_render.py`, `render.py` -- see `pptx-deck/SKILL.md`.
+  `build_deck.py` supports `type: "shape"` elements and real
+  `fit`/`anchor` handling for images (not just stretch) -- see its schema
+  doc for exact fields; both are referenced above.

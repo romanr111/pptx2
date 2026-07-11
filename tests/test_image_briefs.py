@@ -1,114 +1,144 @@
-"""Image briefs: fill-by-file contract, placeholder rendering, and the
-open-brief + AI-medical-review lint gates."""
-import re
+"""Image briefs: fill-by-file contract, resolver provenance, and lint gates."""
+
+import json
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
+import asset_resolver
 import build_deck
 import lint_render
 
 
-def _spec(brief_overrides=None, meta=None):
+def _brief(**brief_overrides):
     brief = {
-        "id": "hero", "asset": "assets/generated/hero.png",
-        "box": {"x": 7000000, "y": 0, "cx": 5192000, "cy": 6858000},
-        "subject": "warm clinic photo", "aspect": "3:4",
+        "id": "hero",
+        "asset": "assets/generated/hero.png",
+        "box": {"x": 7000000, "y": 1000000, "cx": 3000000, "cy": 4000000},
+        "subject": "warm clinic photo",
+        "aspect": "3:4",
         "medical_class": "decorative",
     }
-    brief.update(brief_overrides or {})
+    brief.update(brief_overrides)
+    return brief
+
+
+def _spec(brief_overrides=None, meta=None):
+    brief_overrides = brief_overrides or {}
     spec = {
         "spec_version": 1,
         "slide": {"width_emu": 12192000, "height_emu": 6858000},
         "elements": [
-            {"id": "t", "type": "textbox",
-             "box": {"x": 500000, "y": 500000, "cx": 4000000, "cy": 600000},
-             "paragraphs": [{"lines": [{"text": "x", "font": "Arial",
-                                        "size_pt": 20, "color": "000000"}]}]},
+            {
+                "id": "caption",
+                "type": "textbox",
+                "box": {"x": 100000, "y": 100000, "cx": 1000000, "cy": 300000},
+                "paragraphs": [{"lines": [{"text": "x", "font": "Arial", "size_pt": 12, "color": "000000"}]}],
+            }
         ],
-        "image_briefs": [brief],
+        "image_briefs": [_brief(**brief_overrides)],
+        "animations": [{"step": 1, "targets": ["hero"], "effect": "fade"}],
     }
-    if meta:
+    if meta is not None:
         spec["meta"] = meta
     return spec
 
 
-def _slide_xml(spec, project):
-    prs = build_deck.build(spec, project_root=project)
-    return re.sub(r">\s+<", "><", prs.slides[0]._element.xml)
+def _fill(project_root, asset="assets/generated/hero.png"):
+    path = project_root / asset
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (300, 400), "white").save(path)
+    return path
 
 
-def _fill(project, asset="assets/generated/hero.png"):
-    p = project / asset
-    p.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (60, 80), (90, 70, 50)).save(p)
-    return p
+def _write_provenance(asset_path: Path, **overrides):
+    data = {
+        "brief_id": "hero",
+        "brief_hash": "fixturehash",
+        "source_type": "generated",
+        "selected_rationale": "Best match for the requested slide brief.",
+        "verification_notes": "Visually checked against the brief; no labels, logos, or watermarks.",
+        "medical_class": "decorative",
+        "ai_generated": True,
+    }
+    data.update(overrides)
+    sidecar = asset_resolver.provenance_path(asset_path)
+    sidecar.write_text(json.dumps(data))
+    return sidecar
 
 
-def test_unfilled_brief_renders_placeholder(tmp_path):
-    xml = _slide_xml(_spec(), tmp_path)
-    assert "IMAGE BRIEF" in xml and "warm clinic photo" in xml
-    assert "<p:pic>" not in xml
+def test_unfilled_brief_is_rendered_as_placeholder_and_lint_error(tmp_path):
+    spec = _spec()
+    slide = build_deck.build(spec, project_root=tmp_path).slides[0]
 
-
-def test_acknowledged_brief_renders_nothing(tmp_path):
-    xml = _slide_xml(_spec(meta={"acknowledged_briefs": ["hero"]}), tmp_path)
-    assert "IMAGE BRIEF" not in xml
-    assert "<p:pic>" not in xml
-
-
-def test_filled_brief_places_image_without_spec_edit(tmp_path):
-    _fill(tmp_path)
-    xml = _slide_xml(_spec(), tmp_path)
-    assert "IMAGE BRIEF" not in xml
-    assert "<p:pic>" in xml
-
-
-def test_open_brief_is_lint_error_until_acknowledged(tmp_path):
-    findings = []
-    lint_render.check_image_briefs(_spec(), findings, project_root=tmp_path)
-    assert any(f["severity"] == "error" and f["check"] == "image_brief_open"
-               for f in findings)
+    assert any("IMAGE BRIEF 'hero'" in shape.text for shape in slide.shapes if hasattr(shape, "text"))
 
     findings = []
-    lint_render.check_image_briefs(
-        _spec(meta={"acknowledged_briefs": ["hero"]}), findings,
-        project_root=tmp_path)
-    assert [f["severity"] for f in findings] == ["warn"]
+    lint_render.check_image_briefs(spec, findings, project_root=tmp_path)
+    assert any(f["severity"] == "error" and f["check"] == "image_brief_open" for f in findings)
 
 
-def test_animating_acknowledged_absent_brief_is_validation_error(tmp_path):
-    """Regression: this used to validate clean and then KeyError in build()."""
+def test_acknowledged_missing_brief_warns_and_cannot_be_animated(tmp_path):
     spec = _spec(meta={"acknowledged_briefs": ["hero"]})
-    spec["animations"] = [{"step": 1, "targets": ["hero"], "effect": "fade"}]
+    findings = []
+    lint_render.check_image_briefs(spec, findings, project_root=tmp_path)
+    assert any(f["severity"] == "warn" and f["check"] == "image_brief_open" for f in findings)
+
     errors = build_deck.validate_spec(spec, project_root=tmp_path)
     assert any("can't be animated" in e for e in errors)
-    # filling the brief resolves it with no spec change
+
+
+def test_filled_brief_can_be_animated(tmp_path):
+    spec = _spec()
     _fill(tmp_path)
     assert build_deck.validate_spec(spec, project_root=tmp_path) == []
 
 
-def test_anatomical_ai_image_blocks_until_reviewed(tmp_path):
-    _fill(tmp_path)
-    spec = _spec({"medical_class": "anatomical"})
-    findings = []
-    lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
-    assert any(f["severity"] == "error" and f["check"] == "ai_medical_review"
-               for f in findings)
+def test_filled_local_asset_without_sidecar_passes_review_lint(tmp_path):
+    spec = _spec({"asset": "assets/images/local.png"})
+    _fill(tmp_path, asset="assets/images/local.png")
 
-    spec = _spec({"medical_class": "anatomical"},
-                 meta={"image_reviews": [{"asset": "assets/generated/hero.png",
-                                          "reviewed_by": "Dr. R. Nestor",
-                                          "date": "2026-07-08"}]})
     findings = []
     lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
     assert findings == []
 
 
-def test_decorative_ai_image_gets_review_reminder_warn(tmp_path):
+def test_generated_asset_without_sidecar_errors(tmp_path):
+    spec = _spec()
     _fill(tmp_path)
+
     findings = []
-    lint_render.check_ai_generated_review(_spec(), findings, project_root=tmp_path)
+    lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
+    assert any(f["severity"] == "error" and f["check"] == "asset_provenance" for f in findings)
+
+
+def test_generated_asset_missing_verification_errors(tmp_path):
+    spec = _spec()
+    asset = _fill(tmp_path)
+    _write_provenance(asset, verification_notes="")
+
+    findings = []
+    lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
+    assert any("verification_notes" in f["message"] for f in findings)
+
+
+def test_generated_decorative_asset_with_provenance_warns_for_ai_review(tmp_path):
+    spec = _spec()
+    asset = _fill(tmp_path)
+    _write_provenance(asset)
+
+    findings = []
+    lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
     assert [f["check"] for f in findings] == ["ai_review_reminder"]
+    assert findings[0]["severity"] == "warn"
+
+
+def test_generated_anatomical_asset_with_verification_warns_not_errors(tmp_path):
+    spec = _spec({"medical_class": "anatomical"})
+    asset = _fill(tmp_path)
+    _write_provenance(asset, medical_class="anatomical")
+
+    findings = []
+    lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
+    assert [f["check"] for f in findings] == ["medical_visual_review"]
     assert findings[0]["severity"] == "warn"

@@ -53,6 +53,26 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   script — it requires actually looking at the thumbnails), and reused
   cheaply after that; stale if its `n_slides_total` no longer matches
   `template_style.json.thumbnails`'s count.
+- **`reference_style.py <reference.pdf> --event <slug>`** — the *design
+  reference* ingestion path: organizer-provided PDFs (e.g. Canva exports)
+  are look-and-feel references, **not** production templates. Writes
+  `out/design_reference.json` (a deliberately separate, self-identifying
+  contract with `"authority": "advisory"` — never merge it into
+  `out/template_style.json`): page geometry in EMU, per-page dominant
+  palette + font names, thumbnails to `out/thumbnails/reference/<slug>/`,
+  and harvested raster images to `assets/reference/<slug>/` each with a
+  provenance sidecar. Per owner policy (2026-07-08), assets bundled with
+  provided materials are presumed cleared for that event's decks and
+  should be reused (see `docs/IMPROVEMENT_PLAN.md` §2 — the watermark
+  lint still applies, and reuse outside the event needs its own check).
+  Vector art (logos, icons, rules) is *not* harvested — only embedded
+  rasters; check the thumbnails.
+  Where a real `.pptx` template exists, its facts always win; reference
+  facts only inform the Decisions layer. Like the template path, a
+  human/LLM-written `out/reference_visual_catalog.json` (built by looking
+  at the thumbnails) captures what the reference's designer actually did —
+  layouts, motifs, color roles — and goes stale when its `n_pages_total`
+  no longer matches the PDF.
 - **`build_deck.py <spec.json> [--states] [--check-only] [--out PATH]`** —
   validates a spec (JSON Schema + cross-checks: duplicate ids, missing
   assets, off-slide boxes without `allow_offslide_bleed`, animation targets
@@ -76,6 +96,30 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   checkable; it cannot judge whether a slide actually looks good — that's
   the `pptx-designer` skill's mandatory visual-self-review step, not
   something this script attempts.
+- **`native_packaging.py`** (imported by `build_deck.py`, not a CLI) —
+  post-save package surgery driven by the spec's optional `packaging`
+  object: swaps the built deck's theme part so PowerPoint's color/font
+  pickers show the *event's* brand instead of stock Office, and strips
+  every slide layout no slide references (plus rels and content-type
+  overrides). Two theme sources, both frozen upstream as decisions:
+  `{"kind": "template", "path": ..., "theme_index": N}` grafts the theme
+  out of the organizer's real .pptx (pick the index from
+  `template_style.json.themes[]` — templates can carry several); 
+  `{"kind": "synthesized", "colors": {dk1..accent6}, "major_font",
+  "minor_font", "name"}` is the fallback for reference-only events, where
+  the designer maps the reference palette to slots explicitly. The builder
+  also stamps docProps from `meta.doc_props` (title/author/subject +
+  spec-hash provenance, real dates, correct slide count and 16:9 format)
+  on every build — decks never ship python-pptx's stock boilerplate.
+  Two more packaging levers: `embed_fonts` (per-family TTF slots →
+  `ppt/fonts/*.fntdata` + `embeddedFontLst`, so the deck renders as
+  designed on machines without the fonts; `lint_render`'s
+  `check_embed_font_licenses` warns when no license file sits beside an
+  embedded font) and `media_optimization` (opt-in: bakes cover-crops into
+  pixels and downscales to `dpi_budget` before embedding — forensic F5;
+  originals never touched, derivatives cached in `output/media_cache/`).
+  `max_package_mb` sets a size budget that `lint_deck.py` checks against
+  the built file.
 - **`extract_media.py <template.pptx> <ppt/media/imageN.png> <out.png>
   [--recolor dark|light]`** — pulls one template-embedded media file (e.g. a
   `logo_candidates` entry, which is only known by its in-archive path) onto
@@ -97,16 +141,40 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   `dilate`, `bbox_of`, `alpha_bbox`) used by both `extract_assets.py`
   (pptx-title-slide skill) and `verify_reference.py`, so the two never drift.
 
+- **`lint_deck.py <name.deck.json>`** — cross-slide lint against the deck
+  spec's own `tokens` (the designer's frozen design system): font-family
+  budget (error), `type_scale` conformance by element role (error),
+  palette discipline (warn), content margins for textboxes/tables (warn),
+  per-slide density budget (warn — restraint is countable; the reference
+  slide this pipeline grew from had exactly 7 shapes), and same-role
+  grid alignment across slides (warn). Because the tokens are the
+  standard, this is also the correct conformance source in fallback mode,
+  where `lint_render.py`'s template-theme warns don't apply.
+
+## Deck specs
+
+`specs/deck.schema.json` is the deck contract: ordered `slides` (paths to
+member slide specs), shared `slide` geometry every member must match,
+deck-level `packaging` + `meta.doc_props` (these supersede per-slide
+ones), and `tokens` — palette roles, a role-keyed type scale, margins,
+and budgets. `build_deck.py specs/<name>.deck.json` validates every
+member and assembles them into one .pptx (`--states` is per-slide dev
+tooling and doesn't apply at deck level). `specs/dental.deck.json` is the
+worked example.
+
 ## Spec files
 
 `specs/spec.schema.json` is the versioned contract. A slide spec has:
 
 - `slide`: width/height in EMU.
 - `background`: optional full-bleed image + box.
-- `elements[]`: z-ordered `image`, `textbox`, or `shape` shapes (`table`/
-  `chart` are reserved in the schema for a post-MVP phase — client materials
-  include tables and data — but `build_deck.py` rejects them today with a
-  clear error rather than silently ignoring them). Each element has an `id`
+- `elements[]`: z-ordered `image`, `textbox`, `shape`, or `table` shapes
+  (`chart` is still schema-reserved and rejected with a clear error rather
+  than silently ignored). `table` elements carry `table.columns_emu`,
+  row-major `table.rows` (row 0 = header when `header: true`), and a
+  mandatory `table.style` (font/size/colors/fills/borders) — the builder
+  kills PowerPoint's theme banding so the spec's explicit styling is the
+  only styling. Each element has an `id`
   (referenced by animations), and an optional free-text `role` (e.g.
   `title`, `credentials`, `logo`) for future cross-slide consistency checks.
   `textbox` elements carry `paragraphs[]` of `lines[]` (runs joined by
@@ -121,6 +189,19 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   "rounded_rectangle"`, solid or 2-stop-gradient `fill`, optional `line`
   outline) need no image asset at all — for decorative accents/panels in
   the template's own theme colors.
+- `image_briefs[]`: structured wanted-but-missing images (the "an image
+  belongs here but none exists" decision made executable): box + expected
+  `asset` path (conventionally `assets/generated/<name>.png`) + subject/
+  style/aspect/negative constraints + `medical_class` (decorative |
+  conceptual | anatomical). Fill = drop a file at the path and rebuild, no
+  spec edit. Unfilled + unacknowledged → the builder renders a loud
+  placeholder panel and `lint_render.py` errors; listing the id in
+  `meta.acknowledged_briefs` records "ships without it" (warn + no
+  placeholder). AI-generated fills are recognized by living under
+  `assets/generated/` (or an `ai_generated` provenance sidecar):
+  anatomical ones lint as **error** until `meta.image_reviews` records a
+  human sign-off `{asset, reviewed_by, date}` — this gate is owner policy
+  and must never be softened — decorative/conceptual get a warn reminder.
 - `animations[]`: ordered steps, each `{step, targets, effect, duration_ms}`.
   Only `effect: "fade"` is implemented today (backlog: wipe/fly/appear —
   `build_deck.py` will reject other effects with a clear message rather than

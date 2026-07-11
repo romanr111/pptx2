@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pptx-deck/deck.schema.json",
+  "title": "pptx-deck deck spec",
+  "description": "An ordered set of slide specs plus the deck-wide style tokens that make them read as one designed system. Slide-level packaging/doc_props are ignored when building a deck -- the deck's own win.",
+  "type": "object",
+  "required": ["deck_version", "slide", "slides"],
+  "additionalProperties": false,
+  "properties": {
+    "deck_version": { "const": 1 },
+    "meta": {
+      "type": "object",
+      "description": "Deck-level designer intent. meta.doc_props is stamped into the built package exactly as for a single slide.",
+      "additionalProperties": true
+    },
+    "slide": {
+      "type": "object",
+      "description": "Canvas geometry every member slide must match exactly.",
+      "required": ["width_emu", "height_emu"],
+      "additionalProperties": false,
+      "properties": {
+        "width_emu": { "type": "integer", "exclusiveMinimum": 0 },
+        "height_emu": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+    "packaging": {
+      "type": "object",
+      "description": "Same shape as spec.schema.json#/properties/packaging (validated against it in code). Applied once to the assembled deck."
+    },
+    "tokens": {
+      "type": "object",
+      "description": "The deck's design system, frozen by the designer. lint_deck.py enforces these across every member slide -- this is the measurable half of 'looks art-directed'.",
+      "additionalProperties": false,
+      "properties": {
+        "palette_roles": {
+          "type": "object",
+          "description": "Named brand colors (background, panel, text, accent...). Colors used by slides that appear nowhere in these values draw a warn.",
+          "additionalProperties": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }
+        },
+        "type_scale": {
+          "type": "object",
+          "description": "Keyed by element role. A textbox whose role matches a key must open with exactly this font/size (error otherwise).",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["font", "size_pt"],
+            "additionalProperties": false,
+            "properties": {
+              "font": { "type": "string" },
+              "size_pt": { "type": "number", "exclusiveMinimum": 0 },
+              "bold": { "type": "boolean" }
+            }
+          }
+        },
+        "margins_emu": {
+          "type": "object",
+          "description": "Content margins for textboxes/tables (shapes and images may bleed by design).",
+          "additionalProperties": false,
+          "properties": {
+            "left": { "type": "integer", "minimum": 0 },
+            "right": { "type": "integer", "minimum": 0 },
+            "top": { "type": "integer", "minimum": 0 },
+            "bottom": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "max_font_families": { "type": "integer", "minimum": 1, "default": 2 },
+        "max_elements_per_slide": {
+          "type": "integer", "minimum": 1, "default": 9,
+          "description": "Restraint budget. The forensic reference slide had exactly 7 top-level shapes; density beyond ~9 usually reads as clutter."
+        }
+      }
+    },
+    "slides": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Project-root-relative paths to member slide spec JSON files, in presentation order.",
+      "items": { "type": "string" }
+    }
+  }
+}

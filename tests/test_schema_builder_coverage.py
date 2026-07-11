@@ -205,6 +205,14 @@ def test_table_fields(built):
     # grid borders: width 1pt = 12700 EMU on lnL/lnR/lnT/lnB
     assert '<a:lnL w="12700"' in xml and '<a:lnB w="12700"' in xml
     assert 'val="A68A69"' in xml
+    # CT_TableCellProperties requires lnL/lnR/lnT/lnB in that order before
+    # fill -- presence alone (asserted above) isn't enough, PowerPoint
+    # repairs/drops out-of-order line elements on open
+    tcpr_block = re.search(r"<a:tcPr[^>]*>.*?</a:tcPr>", xml).group(0)
+    positions = [tcpr_block.find(f"<a:{tag}") for tag in ("lnL", "lnR", "lnT", "lnB")]
+    assert all(p != -1 for p in positions), tcpr_block
+    assert positions == sorted(positions), (
+        f"table cell borders out of OOXML schema order: {tcpr_block}")
     # banding flags killed so spec styling is the only styling
     assert 'firstRow="1"' not in xml
 

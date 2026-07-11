@@ -75,6 +75,15 @@ def test_deck_rejects_mismatched_slide_size(project):
     assert any("deck demands" in e for e in errors)
 
 
+def test_deck_reports_malformed_member_spec_without_crashing(project):
+    bad = _slide_spec("Missing slide key")
+    del bad["slide"]
+    deck_path, deck = _write_deck(project, [_slide_spec("ok"), bad])
+    errors, slide_specs = build_deck.validate_deck(deck, project)
+    assert errors != []
+    assert slide_specs == []
+
+
 def test_lint_deck_font_budget_and_type_scale(project):
     tokens = {
         "max_font_families": 2,

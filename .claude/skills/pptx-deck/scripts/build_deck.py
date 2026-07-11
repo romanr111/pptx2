@@ -179,9 +179,16 @@ def validate_deck(deck, project_root=PROJECT_ROOT):
             errors.append(f"deck: slide spec not found: {path_str}")
             continue
         spec = json.loads(path.read_text())
-        for e in validate_spec(spec, project_root):
+        spec_errors = validate_spec(spec, project_root)
+        for e in spec_errors:
             errors.append(f"{path_str}: {e}")
-        if (spec["slide"]["width_emu"] != deck["slide"]["width_emu"]
+        # spec_errors non-empty means spec may not even have a well-formed
+        # "slide" object (e.g. missing width_emu/height_emu) -- comparing
+        # geometry against a schema-invalid spec would crash instead of
+        # reporting a clean error, so skip it; the schema error already
+        # reported above is the actionable one.
+        if not spec_errors and (
+                spec["slide"]["width_emu"] != deck["slide"]["width_emu"]
                 or spec["slide"]["height_emu"] != deck["slide"]["height_emu"]):
             errors.append(f"{path_str}: slide is "
                           f"{spec['slide']['width_emu']}x{spec['slide']['height_emu']} EMU, "
@@ -291,7 +298,10 @@ def add_picture_fitted(slide, path, box, fit="stretch", anchor="center",
     packaging.media_optimization) may swap in a baked/downscaled
     derivative before placement.
     """
-    if media_opt:
+    if media_opt is not None:
+        # media_opt may be {} (schema-legal: "opt in with defaults") --
+        # `if media_opt:` would treat that as falsy and silently skip
+        # optimization, so check presence, not truthiness.
         path, fit = _optimize_image(path, box, fit, media_opt, anchor=anchor)
     if fit == "stretch":
         return slide.shapes.add_picture(path, *emu_box(box))
@@ -358,7 +368,7 @@ def _set_cell_border(cell, color_hex, width_pt):
     """Uniform grid border on one cell (lnL/lnR/lnT/lnB in tcPr)."""
     tcPr = cell._tc.get_or_add_tcPr()
     w = str(int(width_pt * 12700))
-    for tag in ("lnL", "lnR", "lnT", "lnB"):
+    for i, tag in enumerate(("lnL", "lnR", "lnT", "lnB")):
         el = tcPr.find(A_NS + tag)
         if el is not None:
             tcPr.remove(el)
@@ -367,8 +377,11 @@ def _set_cell_border(cell, color_hex, width_pt):
         fill = etree.SubElement(ln, A_NS + "solidFill")
         srgb = etree.SubElement(fill, A_NS + "srgbClr")
         srgb.set("val", color_hex.upper())
-        # OOXML: line elements must precede fill in tcPr
-        tcPr.insert(0, ln)
+        # OOXML CT_TableCellProperties requires lnL/lnR/lnT/lnB (in that
+        # order) before the fill -- insert at the running index i, not
+        # always 0, or the four borders end up in reverse order and
+        # PowerPoint may repair/drop them on open.
+        tcPr.insert(i, ln)
 
 
 def build_table(slide, el):

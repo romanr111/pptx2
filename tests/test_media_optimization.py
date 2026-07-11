@@ -67,6 +67,16 @@ def test_cover_crop_baked_and_downscaled(project, tmp_path):
     assert (project / "assets/big.png").read_bytes() == original
 
 
+def test_empty_dict_opts_in_with_defaults(project, tmp_path):
+    """packaging.media_optimization: {} is schema-legal ("enable with
+    defaults") -- `if media_opt:` treated it as falsy and silently
+    skipped optimization; it must behave like an explicit default dict."""
+    blobs, xml = _built_media(_spec("cover", media_opt={}), project, tmp_path)
+    assert b"srcRect" not in xml                         # crop baked to pixels
+    original = (project / "assets/big.png").read_bytes()
+    assert len(list(blobs.values())[0]) < len(original) / 10
+
+
 def test_alpha_preserved_as_png(project, tmp_path):
     Image.new("RGBA", (3000, 3000), (10, 120, 200, 128)).save(
         project / "assets/big.png")

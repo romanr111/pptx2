@@ -15,6 +15,12 @@ and iterate on it.
 
 ## Inputs
 
+- `assets/styleguide.rtf` / `out/styleguide_profile.json` -- if the RTF
+  exists, run `styleguide_profile.py` before authoring and read the resulting
+  profile as the deck's taste contract. Record the profile name/path in
+  `meta.styleguide_profile` and the concrete slide-specific application in
+  `meta.styleguide_application`.
+
 - `out/assets.json` -- image classifications, font facts (including the
   Geologica naming-trap flags), `font_roles` (heading/body family + which
   theme they came from), parsed slide-copy text blocks.
@@ -211,6 +217,9 @@ to weigh honestly, not silently work around:
   necessarily to remove it.
 - If no candidate actually fits (wrong topic, wrong aspect, all watermarked
   and none croppable tastefully), don't force one in. Instead write a
+  When `out/styleguide_profile.json` exists, image briefs inherit
+  `image_brief_defaults.style` and `image_brief_defaults.negative` unless the
+  slide context needs a more specific visual constraint.
   structured **image brief** (`image_briefs[]`, see `pptx-deck/SKILL.md`
   and the schema): the box where the image belongs, the expected asset
   path, subject/style constraints locked to the event's palette and mood,
@@ -223,6 +232,19 @@ to weigh honestly, not silently work around:
   `meta.asset_gaps` for non-image gaps (e.g. a missing organizer logo).
   A plain-but-honest slide beats a cluttered or copyright-risky one, but
   "we don't have the right asset" should be executable, not just visible.
+
+
+**Asset resolver workflow.** When a spec contains open `image_briefs[]`, run
+`asset_resolver.py plan` before accepting the slide as visually complete. The
+agent must try sources in this order: local `assets/`, embedded template media,
+web image search, then AI generation. For web search, create queries from the
+slide message + brief subject/style, collect several candidates, visually reject
+watermarked/logo-heavy/low-fit results, double-check the short list against the
+brief, then import the best match with resolver provenance. For AI generation,
+use the brief's subject/style/aspect/negative constraints only when search is
+unsuitable or too generic. Web/generated medical or anatomical fills must include
+verification notes in the sidecar; they are allowed with lint warnings and must
+be called out to the user before final delivery.
 
 **Image placement: natural proportions, not stretch.** `build_deck.py`
 defaults every image to `fit: "stretch"` (fills the exact box, distorting
@@ -353,6 +375,10 @@ check, since `lint_render.py`'s theme warns compare against a template
 you're deliberately not using.
 
 ## The build/lint/react loop
+
+If `out/styleguide_profile.json` exists, treat `styleguide_*` lint warnings as
+visual QA feedback: either revise the spec, or record a clear rationale in
+`meta.styleguide_application` for why the slide intentionally diverges.
 
 ```
 build_deck.py specs/<name>.spec.json --states

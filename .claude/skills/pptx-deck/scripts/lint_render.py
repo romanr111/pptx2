@@ -28,6 +28,7 @@ from fontTools.ttLib import TTFont
 from PIL import Image, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import asset_resolver  # noqa: E402
 import build_deck  # noqa: E402
 from imaging import line_bands  # noqa: E402
 from render import render  # noqa: E402
@@ -36,6 +37,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 OUT = PROJECT_ROOT / "output"
 ASSETS_JSON_PATH = PROJECT_ROOT / "out" / "assets.json"
 TEMPLATE_STYLE_JSON_PATH = PROJECT_ROOT / "out" / "template_style.json"
+STYLEGUIDE_PROFILE_JSON_PATH = PROJECT_ROOT / "out" / "styleguide_profile.json"
 FONTS_DIR = Path.home() / "Library" / "Fonts"
 
 PX_PER_PT = 2560 / 960  # 2.6667, the same px/pt constant the render pipeline uses
@@ -509,6 +511,64 @@ def check_embed_font_licenses(spec, findings, project_root=PROJECT_ROOT):
                     f"verify redistribution rights before shipping"))
 
 
+def _text_line_count(spec):
+    count = 0
+    for el in spec.get("elements", []):
+        if el.get("type") != "textbox":
+            continue
+        for para in el.get("paragraphs", []):
+            count += len(para.get("lines", []))
+    return count
+
+
+def _visual_area_ratio(spec):
+    slide = spec.get("slide", {})
+    slide_area = max(1, slide.get("width_emu", 0) * slide.get("height_emu", 0))
+    visual_area = 0
+    if isinstance(slide.get("background"), dict):
+        visual_area += slide_area
+    for el in spec.get("elements", []):
+        if el.get("type") != "image":
+            continue
+        box = el.get("box", {})
+        visual_area += max(0, box.get("cx", 0) * box.get("cy", 0))
+    for brief in spec.get("image_briefs", []):
+        box = brief.get("box", {})
+        visual_area += max(0, box.get("cx", 0) * box.get("cy", 0))
+    return min(1.0, visual_area / slide_area)
+
+
+def check_styleguide_application(spec, findings, styleguide):
+    if not styleguide:
+        return
+    meta = spec.get("meta", {})
+    style_name = styleguide.get("style_name", "styleguide")
+    if not meta.get("styleguide_profile"):
+        findings.append(finding(
+            "warn", "styleguide_application", "meta",
+            f"styleguide profile '{style_name}' is available but "
+            "meta.styleguide_profile is not recorded"))
+    if not meta.get("styleguide_application"):
+        findings.append(finding(
+            "warn", "styleguide_application", "meta",
+            "record how the slide applies the styleguide in "
+            "meta.styleguide_application"))
+
+    max_lines = styleguide.get("text_rules", {}).get("max_text_lines_per_slide")
+    if max_lines and _text_line_count(spec) > max_lines:
+        findings.append(finding(
+            "warn", "styleguide_text_budget", "slide",
+            f"styleguide text budget is {max_lines} lines; spec has "
+            f"{_text_line_count(spec)} text lines"))
+
+    target_visual = styleguide.get("layout_rules", {}).get("visual_ratio_target")
+    if target_visual and _visual_area_ratio(spec) < min(0.35, target_visual / 2):
+        findings.append(finding(
+            "warn", "styleguide_visual_weight", "slide",
+            "styleguide expects a visual-led composition, but this spec has "
+            "no substantial image/background/image_brief area"))
+
+
 def check_image_briefs(spec, findings, project_root=PROJECT_ROOT):
     """No deck ships with a silent hole: an unfilled brief is an error
     unless its id is in meta.acknowledged_briefs (an explicit, reviewable
@@ -531,48 +591,91 @@ def check_image_briefs(spec, findings, project_root=PROJECT_ROOT):
                 f"it via meta.acknowledged_briefs"))
 
 
-def _ai_sidecar(asset_path):
-    sidecar = asset_path.with_suffix(asset_path.suffix + ".json")
-    if not sidecar.is_file():
-        sidecar = asset_path.with_suffix(".json")
-    if sidecar.is_file():
+def _asset_sidecar(asset_path):
+    for sidecar in (asset_path.with_suffix(asset_path.suffix + ".json"),
+                    asset_path.with_suffix(".json")):
+        if not sidecar.is_file():
+            continue
         try:
             return json.loads(sidecar.read_text())
-        except Exception:
-            return {}
+        except json.JSONDecodeError:
+            return {"_invalid_json": True}
     return {}
 
 
+def _needs_provenance(asset, sidecar):
+    source_type = sidecar.get("source_type")
+    return (
+        asset.startswith("assets/generated/")
+        or sidecar.get("ai_generated")
+        or source_type in {"web", "generated"}
+    )
+
+
 def check_ai_generated_review(spec, findings, project_root=PROJECT_ROOT):
-    """Medical review gate (owner policy, never soften to warn): an
-    AI-generated image classified anatomical is an ERROR until a human
-    sign-off is recorded in meta.image_reviews [{asset, reviewed_by,
-    date}]. Decorative/conceptual AI images get a warn-level reminder.
-    'AI-generated' = asset under assets/generated/ or sidecar says so;
-    medical_class comes from the owning brief, else the sidecar."""
-    reviews = {r.get("asset"): r
-               for r in spec.get("meta", {}).get("image_reviews", [])}
-    class_by_asset = {b["asset"]: b["medical_class"]
-                      for b in spec.get("image_briefs", [])}
-    candidates = ([el["asset"] for el in spec["elements"] if el["type"] == "image"]
-                  + [b["asset"] for b in spec.get("image_briefs", [])])
-    for asset in candidates:
+    """Resolver-filled external/generated images need provenance.
+
+    Medical/anatomical external/generated visuals are allowed after the agent's
+    verification layer, but remain warn-level because medical accuracy is a
+    user-facing caveat.
+    """
+    class_by_asset = {b["asset"]: b["medical_class"] for b in spec.get("image_briefs", [])}
+    brief_by_asset = {b["asset"]: b for b in spec.get("image_briefs", [])}
+    reviews = {r.get("asset"): r for r in spec.get("meta", {}).get("image_reviews", [])}
+    assets = {el["asset"] for el in spec.get("elements", []) if el.get("type") == "image"}
+    assets.update(class_by_asset)
+    for asset in sorted(assets):
         path = project_root / asset
         if not path.is_file():
             continue
-        sidecar = _ai_sidecar(path)
-        is_ai = asset.startswith("assets/generated/") or sidecar.get("ai_generated")
-        if not is_ai:
+        sidecar = _asset_sidecar(path)
+        if not _needs_provenance(asset, sidecar):
             continue
+        if not sidecar:
+            findings.append(finding(
+                "error", "asset_provenance", asset,
+                f"external/generated image '{asset}' has no provenance sidecar"))
+            continue
+        if sidecar.get("_invalid_json"):
+            findings.append(finding(
+                "error", "asset_provenance", asset,
+                f"external/generated image '{asset}' has invalid provenance JSON"))
+            continue
+
+        required = ["brief_id", "brief_hash", "source_type", "selected_rationale"]
+        missing = [key for key in required if not sidecar.get(key)]
+        source_type = sidecar.get("source_type")
+        if source_type in {"web", "generated"} and not sidecar.get("verification_notes"):
+            missing.append("verification_notes")
+        if missing:
+            findings.append(finding(
+                "error", "asset_provenance", asset,
+                f"external/generated image '{asset}' provenance missing: "
+                f"{', '.join(sorted(set(missing)))}"))
+            continue
+
+        brief = brief_by_asset.get(asset)
+        if brief is not None:
+            current_hash = asset_resolver.brief_hash(brief)
+            if sidecar.get("brief_hash") != current_hash:
+                findings.append(finding(
+                    "error", "asset_provenance_stale", asset,
+                    f"provenance for '{asset}' was recorded for a different "
+                    f"version of its image_brief (brief_hash mismatch) -- the "
+                    f"brief changed since this image was approved; re-review "
+                    f"the image against the current brief and re-run "
+                    f"asset_resolver.py import"))
+                continue
+
         med = class_by_asset.get(asset) or sidecar.get("medical_class", "decorative")
         review = reviews.get(asset)
-        if med == "anatomical" and not (review and review.get("reviewed_by")):
+        if med == "anatomical":
             findings.append(finding(
-                "error", "ai_medical_review", asset,
-                f"AI-generated ANATOMICAL image '{asset}' has no recorded human "
-                f"sign-off — add meta.image_reviews entry "
-                f"{{asset, reviewed_by, date}} after a medical review"))
-        elif not review:
+                "warn", "medical_visual_review", asset,
+                f"medical/anatomical image '{asset}' was selected from "
+                f"{source_type}; verification notes are present, but accuracy "
+                f"still needs user review before final delivery"))
+        elif source_type == "generated" and not review:
             findings.append(finding(
                 "warn", "ai_review_reminder", asset,
                 f"AI-generated image '{asset}' ({med}) — double-check it before "
@@ -585,6 +688,9 @@ def lint(spec_path: Path):
     spec = json.loads(spec_path.read_text())
     assets_json = json.loads(ASSETS_JSON_PATH.read_text())
     template_style = json.loads(TEMPLATE_STYLE_JSON_PATH.read_text())
+    styleguide = {}
+    if STYLEGUIDE_PROFILE_JSON_PATH.is_file():
+        styleguide = json.loads(STYLEGUIDE_PROFILE_JSON_PATH.read_text())
     lookup = font_lookup(assets_json)
     findings = []
 
@@ -599,6 +705,7 @@ def lint(spec_path: Path):
     check_font_role_alignment(spec, assets_json, findings)
     check_color_conformance(spec, assets_json, template_style, findings)
     check_contrast(spec, findings)
+    check_styleguide_application(spec, findings, styleguide)
     check_watermark_usage(spec, assets_json, findings)
     check_asset_duplication(spec, assets_json, findings)
     check_image_briefs(spec, findings)

@@ -1,9 +1,9 @@
 # Improvement Plan — Speaker-Ready Decks
 
 **Implementation status (2026-07-08): M1, M2, M3 (charts excepted), M4,
-M5-A, and M6 are implemented and verified — 39 tests green, dental proof
+M5-A, M5-B agent-operated resolver, and M6 are implemented and verified — 39 tests green, dental proof
 deck built end-to-end (`specs/dental.deck.json` → `output/dental.pptx`).
-Remaining: M5-B (blocked on image-API provider choice), chart element
+Remaining: provider-backed image API automation, chart element
 type, PowerPoint fidelity check on a machine that has it, HeliosCond
 license verification. Deviation from plan: the "full SAMED deck" M3
 acceptance was not buildable — `assets/slides_text.rtf` contains only the
@@ -242,15 +242,24 @@ would help, and humans stay in control of *what* ships.
   makes an open brief an **error** unless explicitly acknowledged.
 - Filling a brief = drop the file at the path the brief names and rebuild.
 
-**Stage B — generation adapter (once a provider/key is chosen):**
-- `generate_image(brief) -> path` behind a small interface; outputs in
-  `assets/generated/` with provenance sidecars (prompt, model, date, brief
-  hash); inventory tags them `ai_generated: true`.
+**Stage A2 — styleguide profile input (implemented):**
+
+- `styleguide_profile.py` converts `assets/styleguide.rtf` into
+  `out/styleguide_profile.json`.
+- `pptx-designer` records `meta.styleguide_profile` and
+  `meta.styleguide_application`; `lint_render.py` warns on missing application,
+  text-budget drift, and visual-light composition when the profile exists.
+- `asset_resolver.py plan` folds profile image defaults into search queries and
+  generation prompts for open `image_briefs[]`.
+
+**Stage B — asset resolver and generation adapter:**
+- `asset_resolver.py` now provides an agent-operated `plan` / `import` / `report` workflow. It records source type, selected rationale, verification notes, and warnings in provenance sidecars. Provider-backed `generate_image(brief) -> path` remains the future automation seam once a provider/key is chosen.
 
 **Review policy (owner decision, enforced by lint):**
-- `ai_generated` + `medical_class: anatomical` → **error** until sign-off
-  recorded (`meta.image_reviews: [{asset, reviewed_by, date}]`).
-- `decorative`/`conceptual` → warn-level review reminder.
+- Web/generated fills missing provenance or verification notes → **error**.
+- Web/generated `medical_class: anatomical` with verification notes → **warn**
+  so the user sees the accuracy caveat before final delivery.
+- Generated `decorative`/`conceptual` → warn-level review reminder.
 - Existing watermark-usage checks stay, and extend to reference-harvested
   assets (§2 licensing guard).
 
@@ -270,7 +279,7 @@ originals in `assets/` untouched. Deck-size budget check in lint.
 | 4 | M5-A Image briefs | S | Cheap (schema + lint + skill guidance); unblocks the client's workflow immediately |
 | 5 | M4 Font embedding + fidelity | M | Fiddly OOXML work; matters most at delivery time |
 | 6 | M6 Media optimization | S | Polish; do once decks are real |
-| — | M5-B Generation API | M | Blocked on provider/key decision |
+| — | Provider-backed image API | M | Future automation; agent-operated resolver exists |
 
 ## 7. Risks and open items
 
@@ -284,8 +293,5 @@ originals in `assets/` untouched. Deck-size budget check in lint.
 - **HeliosCond license** unknown → embedding gated until verified.
 - **PowerPoint fidelity** not automatable locally; standing manual
   checklist step (per template family, not per deck).
-- **Image-generation provider** unchosen → M5-B blocked; M5-A is
-  deliberately provider-independent.
-- **Medical accuracy** of generated anatomical imagery is accepted *with*
-  the mandatory-review gate — the gate stays error-severity, never
-  softened to a warn.
+- **Image-generation provider** unchosen → provider-backed automation is still open; the current resolver is agent-operated and provider-independent.
+- **Medical accuracy** of generated or web-sourced anatomical imagery is accepted with explicit agent verification notes and user-facing warnings, not silent approval.

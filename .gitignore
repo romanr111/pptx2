@@ -13,3 +13,5 @@ specs/lint_test_fixtures/title_font_compare.spec.json
 specs/dental_title.spec.json
 specs/dental_speaker.spec.json
 specs/dental.deck.json
+specs/sia_med*
+docs/SIA_MED_VISUAL_QA.md

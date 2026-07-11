@@ -10,7 +10,7 @@
     "spec_version": { "const": 1 },
     "meta": {
       "type": "object",
-      "description": "Free-text designer intent/rationale. Ignored by the builder EXCEPT meta.doc_props {title, author, subject}, which the builder stamps into the .pptx core properties (docProps) so deliverables never ship with library-boilerplate metadata.",
+      "description": "Free-text designer intent/rationale. Ignored by the builder EXCEPT meta.doc_props {title, author, subject}, which the builder stamps into the .pptx core properties (docProps) so deliverables never ship with library-boilerplate metadata. When out/styleguide_profile.json exists, designers should record meta.styleguide_profile and meta.styleguide_application so lint can verify the slide used the template/styleguide taste contract.",
       "additionalProperties": true
     },
     "slide": {
@@ -119,7 +119,7 @@
     },
     "image_briefs": {
       "type": "array",
-      "description": "Structured wanted-but-missing images (the AI-decided 'an image belongs here' judgment, made executable). Filling a brief = drop a file at its `asset` path and rebuild — no spec edit. While the file is missing, the builder renders a labeled placeholder panel so the hole is visible in dev renders, and lint_render errors unless the brief id is listed in meta.acknowledged_briefs (an explicit 'ships without it' decision, which also suppresses the placeholder). AI-generated fills land under assets/generated/ with a provenance sidecar and go through the medical review gate (see lint_render).",
+      "description": "Structured wanted-but-missing images (the AI-decided 'an image belongs here' judgment, made executable). Filling a brief = drop a file at its `asset` path and rebuild — no spec edit. While the file is missing, the builder renders a labeled placeholder panel so the hole is visible in dev renders, and lint_render errors unless the brief id is listed in meta.acknowledged_briefs (an explicit 'ships without it' decision, which also suppresses the placeholder). Web/generated fills land under assets/generated/ with a provenance sidecar (asset.ext.json). Missing provenance is an error; verified medical/anatomical fills warn so user review remains explicit (see lint_render).",
       "items": {
         "type": "object",
         "required": ["id", "box", "asset", "subject", "aspect", "medical_class"],

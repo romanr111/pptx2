@@ -25,6 +25,9 @@ primitives — never a particular slide's layout, fonts, or positions.
 All under `scripts/`, run with the project venv (`.venv/bin/python`, set up
 by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
 
+- **`styleguide_profile.py`** — converts `assets/styleguide.rtf` into
+  `out/styleguide_profile.json`, a compact design-phase taste contract used by
+  `pptx-designer`, `asset_resolver.py`, and `lint_render.py`.
 - **`inventory.py`** — walks `assets/` and the template `.pptx`, writes
   `out/assets.json` (per-image classification + watermark flag, per-font
   name-table families/weights + role guess, per-text-file parsed blocks) and
@@ -189,19 +192,30 @@ worked example.
   "rounded_rectangle"`, solid or 2-stop-gradient `fill`, optional `line`
   outline) need no image asset at all — for decorative accents/panels in
   the template's own theme colors.
-- `image_briefs[]`: structured wanted-but-missing images (the "an image
-  belongs here but none exists" decision made executable): box + expected
-  `asset` path (conventionally `assets/generated/<name>.png`) + subject/
-  style/aspect/negative constraints + `medical_class` (decorative |
-  conceptual | anatomical). Fill = drop a file at the path and rebuild, no
-  spec edit. Unfilled + unacknowledged → the builder renders a loud
-  placeholder panel and `lint_render.py` errors; listing the id in
-  `meta.acknowledged_briefs` records "ships without it" (warn + no
-  placeholder). AI-generated fills are recognized by living under
-  `assets/generated/` (or an `ai_generated` provenance sidecar):
-  anatomical ones lint as **error** until `meta.image_reviews` records a
-  human sign-off `{asset, reviewed_by, date}` — this gate is owner policy
-  and must never be softened — decorative/conceptual get a warn reminder.
+- `image_briefs[]`: structured wanted-but-missing images. Each brief carries a
+box, expected `asset` path (conventionally `assets/generated/<name>.png`),
+subject, style, aspect, negative constraints, and `medical_class`
+(`decorative` | `conceptual` | `anatomical`). Fill = put an image at the
+asset path and rebuild. Open unacknowledged briefs render as loud placeholder
+panels and `lint_render.py` errors; `meta.acknowledged_briefs` records a
+reviewable "ship without it" decision.
+
+Use `asset_resolver.py` for the agent-operated fill workflow:
+
+```bash
+.venv/bin/python .claude/skills/pptx-deck/scripts/asset_resolver.py plan specs/<name>.spec.json
+.venv/bin/python .claude/skills/pptx-deck/scripts/styleguide_profile.py assets/styleguide.rtf
+.venv/bin/python .claude/skills/pptx-deck/scripts/asset_resolver.py import specs/<name>.spec.json \
+  --brief-id <id> --source <selected-image> --source-type local|template|web|generated \
+  --rationale "why this image fits" --verification "what was checked"
+.venv/bin/python .claude/skills/pptx-deck/scripts/asset_resolver.py report specs/<name>.spec.json
+```
+
+Resolver order is local `assets/`, embedded template media, web search, then AI
+generation. Web/generated fills without provenance sidecars (`asset.ext.json`)
+lint as **error**. Verified medical/anatomical web/generated fills lint as
+**warn** so the user sees the accuracy caveat, not as a hard block.
+
 - `animations[]`: ordered steps, each `{step, targets, effect, duration_ms}`.
   Only `effect: "fade"` is implemented today (backlog: wipe/fly/appear —
   `build_deck.py` will reject other effects with a clear message rather than

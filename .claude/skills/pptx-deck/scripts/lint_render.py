@@ -28,6 +28,7 @@ from fontTools.ttLib import TTFont
 from PIL import Image, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import asset_resolver  # noqa: E402
 import build_deck  # noqa: E402
 from imaging import line_bands  # noqa: E402
 from render import render  # noqa: E402
@@ -619,6 +620,7 @@ def check_ai_generated_review(spec, findings, project_root=PROJECT_ROOT):
     user-facing caveat.
     """
     class_by_asset = {b["asset"]: b["medical_class"] for b in spec.get("image_briefs", [])}
+    brief_by_asset = {b["asset"]: b for b in spec.get("image_briefs", [])}
     reviews = {r.get("asset"): r for r in spec.get("meta", {}).get("image_reviews", [])}
     assets = {el["asset"] for el in spec.get("elements", []) if el.get("type") == "image"}
     assets.update(class_by_asset)
@@ -651,6 +653,19 @@ def check_ai_generated_review(spec, findings, project_root=PROJECT_ROOT):
                 f"external/generated image '{asset}' provenance missing: "
                 f"{', '.join(sorted(set(missing)))}"))
             continue
+
+        brief = brief_by_asset.get(asset)
+        if brief is not None:
+            current_hash = asset_resolver.brief_hash(brief)
+            if sidecar.get("brief_hash") != current_hash:
+                findings.append(finding(
+                    "error", "asset_provenance_stale", asset,
+                    f"provenance for '{asset}' was recorded for a different "
+                    f"version of its image_brief (brief_hash mismatch) -- the "
+                    f"brief changed since this image was approved; re-review "
+                    f"the image against the current brief and re-run "
+                    f"asset_resolver.py import"))
+                continue
 
         med = class_by_asset.get(asset) or sidecar.get("medical_class", "decorative")
         review = reviews.get(asset)

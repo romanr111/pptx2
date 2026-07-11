@@ -51,10 +51,13 @@ def _fill(project_root, asset="assets/generated/hero.png"):
     return path
 
 
-def _write_provenance(asset_path: Path, **overrides):
+def _write_provenance(asset_path: Path, brief_overrides=None, **overrides):
+    """brief_hash defaults to the *real* hash of _brief(**brief_overrides), so
+    it matches whatever brief the spec under test actually carries -- pass
+    brief_hash= explicitly to simulate a stale/mismatched sidecar."""
     data = {
         "brief_id": "hero",
-        "brief_hash": "fixturehash",
+        "brief_hash": asset_resolver.brief_hash(_brief(**(brief_overrides or {}))),
         "source_type": "generated",
         "selected_rationale": "Best match for the requested slide brief.",
         "verification_notes": "Visually checked against the brief; no labels, logos, or watermarks.",
@@ -136,9 +139,29 @@ def test_generated_decorative_asset_with_provenance_warns_for_ai_review(tmp_path
 def test_generated_anatomical_asset_with_verification_warns_not_errors(tmp_path):
     spec = _spec({"medical_class": "anatomical"})
     asset = _fill(tmp_path)
-    _write_provenance(asset, medical_class="anatomical")
+    _write_provenance(asset, brief_overrides={"medical_class": "anatomical"},
+                       medical_class="anatomical")
 
     findings = []
     lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
     assert [f["check"] for f in findings] == ["medical_visual_review"]
     assert findings[0]["severity"] == "warn"
+
+
+def test_edited_brief_after_approval_errors_as_stale(tmp_path):
+    """A brief approved as decorative, then edited to anatomical (or any
+    other change) after the fact, must not keep sailing through on its old
+    approval -- brief_hash mismatch is the only tripwire for this now that
+    anatomical review is warn-level, not a recorded human sign-off."""
+    spec = _spec()  # brief as originally approved: decorative
+    asset = _fill(tmp_path)
+    _write_provenance(asset)  # hash matches the decorative brief above
+
+    # brief edited after approval, in place -- same id/asset, different content
+    spec["image_briefs"][0]["medical_class"] = "anatomical"
+    spec["image_briefs"][0]["subject"] = "TMJ mechanism diagram"
+
+    findings = []
+    lint_render.check_ai_generated_review(spec, findings, project_root=tmp_path)
+    assert [f["check"] for f in findings] == ["asset_provenance_stale"]
+    assert findings[0]["severity"] == "error"

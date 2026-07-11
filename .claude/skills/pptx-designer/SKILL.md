@@ -258,6 +258,47 @@ an image to fill a box edge-to-edge, e.g. a background panel. Reach for
 `stretch` only when the box was chosen specifically to match the image's own
 aspect ratio, not as a default.
 
+**Seamless image integration (MANDATORY for every decorative 3D/photographic
+element).** The viewer must *never* see an inserted image's rectangular
+boundary, crop box, background edge, or bounding box. Every decorative visual
+must look native to the slide -- as though it continues beyond the canvas or
+dissolves into the background. A pasted-on rectangle, a hard image border, an
+abrupt clip, or a background tone that mismatches the slide (a light-gray
+"studio" panel on a white slide, a not-quite-black block on a dark slide)
+instantly reads as amateur. This is not lint-checkable -- it is a hard visual-
+review gate. Rules:
+
+1. **Prefer clean transparent-alpha PNGs.** Molecular/3D renders and cutout
+   portraits with a real alpha channel dissolve for free -- verify the alpha
+   is clean (fully transparent outside the subject, no rectangular matte;
+   sample the corners). These need no further work beyond overscan (below).
+2. **A solid-background source (white/gray/black JPG) is never placed as a
+   panel as-is.** Its internal edge *will* show. Bake a seamless derivative
+   with `pptx-deck`'s `seamless_hero.py`: (a) **match the
+   background to the slide** -- whiten a light-desaturated studio background
+   to true white on a white slide, or fade to true black on a dark slide,
+   using a luminance+saturation mask that whitens/darkens only the background
+   and *protects the subject* (colorful spheres, metallic rods, skin); (b)
+   **feather every internal edge** with a *directional* alpha ramp (a smooth-
+   step gradient over ~12-18% of the width/height, 0->opaque), not a hard
+   crop and not uniform whole-image opacity (uniform opacity just washes the
+   subject out -- rule 9 of the brief); (c) place the baked PNG with
+   `fit: "stretch"` so your feather is preserved exactly (cover/contain would
+   re-crop it away).
+3. **Overscan the outer edges off-slide** by a few percent: a large object
+   should bleed past the slide boundary (`allow_offslide_bleed`), never
+   terminate at an arbitrary point *inside* the slide. Only the *internal*
+   edge(s) get the feather; the bled edges are clipped by the slide itself
+   (which is fine -- an object cropped by the outer boundary is invisible as
+   a boundary; an object's own image edge inside the canvas is not).
+4. **Preserve the main subject at full clarity** -- fade only near the
+   integration edges. Crop the source so shadows/dark corners/foreign objects
+   fall in the feathered or bled zone, not in the visible center.
+5. **Always confirm in the render, not the spec.** Composite the baked asset
+   on the exact slide background colour and look for any tonal block or line;
+   iterate the whiten threshold and feather width until the transition is
+   invisible.
+
 **Decorative accent shapes.** When a composition has a large plain region
 that isn't carrying content (see "Hero/thematic imagery"), and no
 appropriate photo/illustration exists to fill it, consider a `type: "shape"`
@@ -434,6 +475,12 @@ before anyone else sees it:
   cannot make; only looking at the render can.
 - **Brand presence** -- does the theme's palette show up anywhere besides
   the logo?
+- **Seamless images** -- is any inserted image's rectangular boundary, crop
+  box, or background edge visible? Does a photo/render's background tone
+  mismatch the slide (a gray panel on white, a not-quite-black block on
+  dark)? Every decorative visual must dissolve into or bleed past the canvas
+  -- if you can see where the image starts, it fails (see "Seamless image
+  integration").
 
 If it doesn't hold up, **keep iterating** -- adjust geometry, fonts, or add
 accents, then rebuild and re-render -- exactly like reacting to a lint

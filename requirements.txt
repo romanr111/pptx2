@@ -1,0 +1,8 @@
+python-pptx
+Pillow
+numpy
+jsonschema
+fonttools
+lxml
+pymupdf
+pytest

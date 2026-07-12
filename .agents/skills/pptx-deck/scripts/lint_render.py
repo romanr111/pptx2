@@ -526,15 +526,24 @@ LICENSE_FILENAMES = ("OFL.txt", "LICENSE", "LICENSE.txt", "LICENSE.md",
                      "COPYING", "COPYING.txt", "UFL.txt")
 
 
-def check_embed_font_licenses(spec, findings, project_root=PROJECT_ROOT):
+def check_embed_font_licenses(spec, findings, project_root=PROJECT_ROOT, deck=None):
     """Embedding redistributes font software inside a client file. Warn
     whenever no license evidence sits next to an embedded font file —
-    prompting a human to verify redistribution rights, not blocking."""
-    for entry in spec.get("packaging", {}).get("embed_fonts", []):
+    prompting a human to verify redistribution rights, not blocking.
+
+    Deck packaging supersedes per-slide packaging at build time, so when the
+    owning deck is passed (`--deck`, deck_qa.py always does) its embed_fonts
+    are checked too — otherwise a deck-level unlicensed font (e.g. HeliosCond)
+    would be embedded with no redistribution warning anywhere."""
+    entries = list(spec.get("packaging", {}).get("embed_fonts", []))
+    entries += (deck or {}).get("packaging", {}).get("embed_fonts", [])
+    seen = set()
+    for entry in entries:
         for key in ("regular", "bold", "italic", "bold_italic"):
             path = entry.get(key)
-            if not path:
+            if not path or path in seen:
                 continue
+            seen.add(path)
             font_path = project_root / path
             if not font_path.is_file():
                 continue  # existence is validate_spec's error, not ours
@@ -740,12 +749,27 @@ def check_placed_image_provenance(spec, findings, project_root=PROJECT_ROOT):
         sidecar = _asset_sidecar(path)
         if _needs_provenance(asset, sidecar):
             continue  # handled by check_ai_generated_review
-        if not sidecar:
+        if sidecar.get("_invalid_json"):
+            findings.append(finding(
+                "error", "placed_image_provenance", el["id"],
+                f"provenance sidecar for '{asset}' is not valid JSON — a "
+                f"broken sidecar must not silence the gate; fix {path.name}.json"))
+        elif not sidecar:
             findings.append(finding(
                 "error", "placed_image_provenance", el["id"],
                 f"placed image '{asset}' has no provenance sidecar — "
                 f"record source, license, and rationale in a "
                 f"{path.name}.json sidecar"))
+        else:
+            missing = [k for k in ("source_type", "license", "selected_rationale")
+                       if not sidecar.get(k)]
+            if missing:
+                findings.append(finding(
+                    "error", "placed_image_provenance", el["id"],
+                    f"provenance sidecar for '{asset}' is missing required "
+                    f"field(s) {missing} — an empty or partial sidecar must "
+                    f"not silence the gate; record source_type, license, and "
+                    f"selected_rationale"))
 
 
 def check_ai_generated_review(spec, findings, project_root=PROJECT_ROOT):
@@ -911,7 +935,7 @@ def lint(spec_path: Path, deck_path: Path = None):
     check_ai_generated_review(spec, findings)
     check_placed_image_provenance(spec, findings)
     check_visual_review(spec, findings)
-    check_embed_font_licenses(spec, findings)
+    check_embed_font_licenses(spec, findings, deck=deck)
     check_font_embedding_decision(spec, lookup, findings, deck=deck)
     check_render_structure(spec, spec_path, lookup, findings)
 

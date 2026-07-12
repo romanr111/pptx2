@@ -203,8 +203,12 @@ def main():
             report["render"]["n_slides"] = len(pngs)
         except Exception as e:
             report["render"]["error"] = str(e)
+            report["ok"] = False
+            report["total_errors"] += 1
     else:
         report["render"]["error"] = f"{deck_pptx} not found"
+        report["ok"] = False
+        report["total_errors"] += 1
 
     # 6. Write consolidated report
     if args.out:

@@ -168,6 +168,69 @@ def test_role_substring_does_not_exempt(tmp_path):
     assert _by_check(findings) == {"placed_image_provenance": "error"}
 
 
+def test_placed_image_invalid_json_sidecar_is_an_error(tmp_path):
+    """A broken .json is truthy internally ({'_invalid_json': True}) — it must
+    not silence the gate."""
+    from PIL import Image
+    target = tmp_path / "assets" / "photos" / "pic.png"
+    target.parent.mkdir(parents=True)
+    Image.new("RGB", (10, 10)).save(target)
+    (tmp_path / "assets" / "photos" / "pic.png.json").write_text("{not valid json")
+    findings = []
+    lint_render.check_placed_image_provenance(
+        _spec(elements=[_image("assets/photos/pic.png")]), findings,
+        project_root=tmp_path)
+    assert _by_check(findings) == {"placed_image_provenance": "error"}
+
+
+def test_placed_image_partial_sidecar_is_an_error(tmp_path):
+    """A sidecar that exists but omits the promised source/license/rationale
+    fields must not pass just by being present."""
+    from PIL import Image
+    target = tmp_path / "assets" / "photos" / "pic.png"
+    target.parent.mkdir(parents=True)
+    Image.new("RGB", (10, 10)).save(target)
+    (tmp_path / "assets" / "photos" / "pic.png.json").write_text(
+        json.dumps({"note": "looks fine"}))
+    findings = []
+    lint_render.check_placed_image_provenance(
+        _spec(elements=[_image("assets/photos/pic.png")]), findings,
+        project_root=tmp_path)
+    assert _by_check(findings) == {"placed_image_provenance": "error"}
+
+
+# ----------------------------------------------------- embed_font_license --
+
+def test_deck_level_embedded_font_without_license_warns(tmp_path):
+    """Deck packaging supersedes per-slide packaging at build time, so a
+    deck-level embedded font with no license beside it (e.g. HeliosCond) must
+    still trip the redistribution warning."""
+    font = tmp_path / "assets" / "fonts" / "helioscond" / "HeliosCond.ttf"
+    font.parent.mkdir(parents=True)
+    font.write_bytes(b"\x00\x01\x00\x00")
+    deck = {"packaging": {"embed_fonts": [
+        {"family": "HeliosCond",
+         "regular": "assets/fonts/helioscond/HeliosCond.ttf"}]}}
+    findings = []
+    lint_render.check_embed_font_licenses(
+        _spec(), findings, project_root=tmp_path, deck=deck)
+    assert _by_check(findings) == {"embed_font_license": "warn"}
+
+
+def test_deck_level_embedded_font_with_license_is_clean(tmp_path):
+    font = tmp_path / "assets" / "fonts" / "geologica" / "Geologica.ttf"
+    font.parent.mkdir(parents=True)
+    font.write_bytes(b"\x00\x01\x00\x00")
+    (font.parent / "OFL.txt").write_text("SIL Open Font License")
+    deck = {"packaging": {"embed_fonts": [
+        {"family": "Geologica",
+         "regular": "assets/fonts/geologica/Geologica.ttf"}]}}
+    findings = []
+    lint_render.check_embed_font_licenses(
+        _spec(), findings, project_root=tmp_path, deck=deck)
+    assert findings == []
+
+
 # --------------------------------------------------- asset inventory --
 
 def test_uninventoried_placed_asset_warns():

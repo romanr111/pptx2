@@ -4,6 +4,12 @@ __pycache__/
 .DS_Store
 out/
 output/
+# no-slash variants: in a worktree these may be symlinks back to the main
+# checkout, and "dir/" patterns do not match symlinks
+.venv
+out
+output
+assets
 
 # Client materials: proprietary template, real photos, real-name specs.
 # Never publish these — see README for how to supply your own.

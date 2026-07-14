@@ -5,10 +5,15 @@
 
 - **P0 №4 «Закрити залишкові дірки delivery gate»** — page-count hard
   failure, montage всієї деки, manifest із хешами артефактів (обсяг S);
-- **P1 №9 «Розширений формат visual findings»** — severity, evidence,
-  confidence, auto_fixable у findings; gate на unresolved blocker/major;
-  wiring sequence-level review у `lint_deck`; before/after montage між
-  ітераціями (обсяг S).
+- **P1 №9 «Розширений формат visual findings»** — мінімальне розширення:
+  поле `severity` і необов'язковий `resolution` у наявному finding; gate
+  на unresolved blocker/major; wiring sequence-level review у `lint_deck`;
+  before/after montage між ітераціями (обсяг S). **Свідомо НЕ додаємо**
+  `confidence`, `auto_fixable`, окремий модуль-контракт `validate_review`
+  з правилами валідації полів — це церемонія без споживача (нічого на
+  `confidence` не гейтить, авто-фіксера за `auto_fixable` немає), і вона
+  суперечить принципу «агент судить, а не заповнює числові поля» (див.
+  Крок 6).
 
 ## Зв'язок із планом
 
@@ -152,6 +157,14 @@
 
 #### Крок 3. Manifest у `deck_qa.py`
 
+**Пріоритет:** це найнижча за клієнтською цінністю частина етапу — клієнт
+отримує деку, а не sha256 її PDF. Єдиний реальний споживач manifest —
+майбутній людський sign-off (P2 №13). Код дешевий і адитивний, тож
+лишаємо його тут; але якщо етап треба вкоротити, `manifest.json` можна
+відкласти до P2 №13 без шкоди для page-count і montage (справжня цінність
+P0 №4). Page-count hard failure (Крок 1) і montage (Крок 2) — не
+відкладати.
+
 1. У `render.py` розширити хеш-функцію, зберігши поведінку кешу:
 
    ```python
@@ -254,74 +267,80 @@
 
 ### Частина B — розширений формат visual findings (P1 №9)
 
-#### Крок 6. Спільний модуль контракту `review_contract.py`
+#### Крок 6. Мінімальне розширення finding + крихітний спільний хелпер
 
-Новий файл `.claude/skills/pptx-deck/scripts/review_contract.py` —
-єдине місце, де живе розширений формат finding; його імпортують і
-`lint_render.py`, і `lint_deck.py` (без важких залежностей — тільки
-stdlib).
+**Без нового модуля-контракту.** Розширення finding — це два поля на
+наявній формі й одне правило gate. Спільної логіки рівно стільки, що вона
+не виправдовує окремого `review_contract.py` з валідацією полів; крихітний
+хелпер живе в наявному `common.py` (спільний модуль, який обидва лінти вже
+можуть імпортувати), решта — по ~5 рядків у кожній check-функції.
 
-1. Розширена форма finding (орієнтовний ескіз):
+1. Розширена форма finding (орієнтовний ескіз) — наявні `element_id`/`issue`
+   лишаються, додаються `severity` і необов'язковий `resolution`:
 
    ```json
    {
      "element_id": "headline",
-     "area": "element:headline",
      "issue": "заголовок наїжджає на молекулу",
      "severity": "major",
-     "evidence": "output/rendered/sia_med_qa/crops/iter2_headline.png",
      "recommended_fix": "зсунути headline на 20 px ліворуч",
-     "confidence": 0.85,
-     "auto_fixable": false,
-     "resolution": {"action": "fixed", "iteration": 3,
-                    "note": "box зсунуто, ре-рендер чистий"}
+     "evidence": "output/rendered/sia_med_qa/crops/iter2_headline.png",
+     "resolution": {"action": "fixed", "note": "box зсунуто, ре-рендер чистий"}
    }
    ```
 
-   - `severity`: `blocker | major | minor | observation`;
-   - `area`: id елемента (`element:<id>`) або вільний опис регіону
-     (`region:top-left`), коли дефект не прив'язаний до елемента;
-     `element_id` лишається для сумісності й адресації;
-   - `evidence`: repo-root-relative шлях до crop-PNG (конвенція:
-     `output/rendered/<stem>_qa/crops/iter<N>_<area>.png`; crops ріже
-     агент-рецензент із повнорозмірних page-PNG);
-   - `confidence`: число 0–1; `auto_fixable`: bool;
-   - `resolution` — необов'язковий об'єкт; його присутність із
-     непорожнім `action` означає «resolved». Спеціальне значення
+   - `severity`: `blocker | major | minor | observation` — **єдине
+     обов'язкове нове поле** розширеної форми; його проставляє агент,
+     дивлячись на рендер;
+   - `recommended_fix`, `evidence` — **необов'язковий вільний текст/шлях**
+     для людини-рецензента. Ми їх **не валідуємо** (не перевіряємо
+     існування файлу, не вимагаємо для blocker/major) — це підказки, а не
+     предмет gate; будувати навколо них детерміновані правила означало б
+     повернути ту саму церемонію, яку цей крок прибирає;
+   - `resolution` — необов'язковий об'єкт; його присутність із непорожнім
+     `action` означає «resolved». Спеціальне значення
      `action: "deferred_to_human"` (обов'язково з `reason`) — явна
-     передача людині: gate не блокує, але лишає warn.
-2. API модуля (орієнтовно):
+     передача людині: gate не блокує, але лишає warn;
+   - **свідомо без** `confidence` (нічого на ньому не гейтить — агент або
+     ставить finding, або ні) і **без** `auto_fixable` (авто-фіксера в
+     конвеєрі немає — YAGNI; додати разом із фіксером, якщо колись
+     з'явиться).
+
+2. Крихітний хелпер у `common.py` (єдина спільна логіка двох рівнів
+   review), орієнтовно:
 
    ```python
    SEVERITIES = {"blocker", "major", "minor", "observation"}
    GATE_SEVERITIES = {"blocker", "major"}
    VERDICTS = {"pass", "fail", "pass_with_notes"}
 
-   def is_legacy(f) -> bool: ...      # {element_id, issue} без severity
-   def is_resolved(f) -> bool: ...
-   def validate_review(review, project_root) -> list[dict]:
-       """[{level: 'error'|'warn', code, where, message}] —
-       нейтральні issues; кожен linter мапить їх у свій finding()."""
+   def finding_resolved(f) -> bool:
+       res = f.get("resolution")
+       return bool(res) and bool(res.get("action"))
+
+   def unresolved_gate_findings(review) -> list:
+       """blocker/major findings, які ще не resolved і не передані людині —
+       саме вони провалюють gate."""
+       out = []
+       for f in review.get("findings", []):
+           if f.get("severity") in GATE_SEVERITIES and not finding_resolved(f):
+               out.append(f)
+       return out
    ```
 
-3. Правила `validate_review` (виконуються для обох рівнів review):
-   - legacy-форма finding (`{element_id, issue}` без `severity`) →
-     **один warn** на review (`code: visual_review_findings_legacy`),
-     ніколи не error — зворотна сумісність із поточним контрактом
-     `check_visual_review`;
-   - невідомий `severity` → warn; `confidence` не число або поза
-     [0, 1] → warn; `auto_fixable` не bool → warn;
-   - `evidence` заданий, але файл відсутній (перевірка через
-     `project_root / evidence`) → warn; blocker/major без `evidence`
-     → warn (докази вимагаються, але їх відсутність не маскує головний
-     сигнал — unresolved-помилку нижче);
-   - **unresolved blocker/major → error**
-     (`code: visual_review_unresolved`). Визначення «unresolved»:
-     `severity ∈ {blocker, major}` і (немає валідного `resolution`
-     **або** `verdict == "fail"`). `deferred_to_human` із `reason` —
-     resolved для gate + окремий warn;
-   - `verdict` поза `VERDICTS` → warn — закриває сьогоднішню діру,
-     коли невідомий verdict проходить мовчки.
+3. Правила gate (застосовуються однаково до per-slide і sequence review,
+   по кілька рядків прямо в check-функції — Крок 7/8, без окремого
+   `validate_review`):
+   - finding **без** `severity` (стара форма `{element_id, issue}`) →
+     сумісність зберігається: не error; якщо в review є хоч один такий —
+     один warn `visual_review_findings_legacy`;
+   - `severity` поза `SEVERITIES` → warn (одрук/невідома важкість);
+   - **unresolved blocker/major → error** (`visual_review_unresolved`) —
+     навіть коли `verdict` уже `pass`/`pass_with_notes` (внутрішньо
+     суперечливий review не проходить). `action: "deferred_to_human"` з
+     `reason` рахується як resolved для gate + окремий warn;
+   - `verdict` поза `VERDICTS` → warn — закриває сьогоднішню діру, коли
+     невідомий verdict проходить мовчки.
 
 #### Крок 7. Розширити `check_visual_review` у `lint_render.py`
 
@@ -332,11 +351,13 @@ stdlib).
    `iteration > MAX_VISUAL_REVIEW_ITERATIONS` → error
    (`visual_review_iterations`); `verdict == "fail"` → error
    (`visual_review_failed`).
-2. Додати виклик `review_contract.validate_review(review,
-   PROJECT_ROOT)` і змапити нейтральні issues у
-   `finding(level, code, element_id_or_"meta", message)`. Для
-   testability пропустити `project_root` параметром із дефолтом
-   `PROJECT_ROOT`, за зразком `check_placed_image_provenance`.
+2. Додати ~15 рядків прямо в `check_visual_review` за правилами gate з
+   Кроку 6: `common.unresolved_gate_findings(review)` → кожен елемент дає
+   error `visual_review_unresolved`; будь-який legacy-finding без
+   `severity` → один warn `visual_review_findings_legacy`; `severity`
+   поза `common.SEVERITIES` → warn; `verdict` поза `common.VERDICTS` →
+   warn. Жодного `project_root` не потрібно — `evidence`/`recommended_fix`
+   не валідуються (файлову систему не чіпаємо).
 3. Оновити docstring `check_visual_review` новим контрактом (він —
    де-факто документація формату для агента-рецензента).
 4. Семантика gate після зміни: сьогодні error дає лише
@@ -361,7 +382,8 @@ stdlib).
    - `meta.sequence_review` відсутній → warn («sequence-level review
      не записано») — ескалацію до error, якщо така буде, вирішує
      Етап 2;
-   - присутній → та сама `review_contract.validate_review`;
+   - присутній → ті самі правила gate Кроку 6 (той самий
+     `common.unresolved_gate_findings` + legacy/severity/verdict warns);
      `verdict == "fail"` → error; unresolved blocker/major → error;
      мапінг у `finding(severity, check, where, message)` з
      `where = "deck"` або `"deck:<stem>"` за першим елементом
@@ -427,7 +449,7 @@ stdlib).
 Частина B:
 
 8. Розширений finding `minor` без resolution, verdict `pass` → без
-   error (лише можливі warn за відсутній evidence).
+   error.
 9. `blocker` без `resolution` → error `visual_review_unresolved`;
    те саме при verdict `pass_with_notes` (вердикт не маскує).
 10. `blocker` із `resolution.action = "fixed"` → чисто.
@@ -437,10 +459,11 @@ stdlib).
     `visual_review_findings_legacy`, без error; наявні три
     visual_review-тести (`test_visual_review_missing_is_a_warn` та
     ін.) проходять без змін — це і є перевірка зворотної сумісності.
-13. Валідація полів: невідомий `severity` → warn; `confidence: 1.5` →
-    warn; `auto_fixable: "yes"` → warn; невідомий `verdict` → warn.
-14. `evidence` вказує на неіснуючий файл (`project_root=tmp_path`) →
-    warn; існуючий crop-PNG → чисто.
+13. Валідація полів: невідомий `severity` → warn; невідомий `verdict`
+    → warn. (`confidence`/`auto_fixable` немає — тестувати нема чого.)
+14. `common.unresolved_gate_findings` як чиста функція: набір із
+    blocker+major без resolution, minor, resolved-blocker → повертає
+    лише перші два.
 15. `lint_deck.check_sequence_review`: відсутній → warn; verdict
     `fail` → error; unresolved blocker → error; blocker із resolution
     → чисто; `where` містить stem слайда, коли finding має непорожній

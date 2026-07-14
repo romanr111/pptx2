@@ -51,6 +51,22 @@ def test_visual_review_pass_is_clean():
     assert findings == []
 
 
+def test_visual_review_without_verdict_is_an_error():
+    findings = []
+    meta = {"visual_review": {"iteration": 1, "findings": []}}
+    lint_render.check_visual_review(_spec(meta=meta), findings)
+    assert _by_check(findings) == {"visual_review_verdict": "error"}
+
+
+def test_visual_review_with_unknown_verdict_is_an_error():
+    findings = []
+    meta = {"visual_review": {
+        "iteration": 1, "verdict": "approved_by_vibes", "findings": [],
+    }}
+    lint_render.check_visual_review(_spec(meta=meta), findings)
+    assert _by_check(findings) == {"visual_review_verdict": "error"}
+
+
 def test_visual_review_fail_and_iteration_cap_are_errors():
     findings = []
     meta = {"visual_review": {"iteration": 4, "verdict": "fail",
@@ -229,12 +245,58 @@ def test_logo_over_busy_imagery_warns(tmp_path):
     assert _by_check(findings) == {"logo_clearance": "warn"}
 
 
+def test_logo_over_busy_full_bleed_imagery_warns(tmp_path):
+    """A full-bleed hero is still artwork, not an automatically clean panel."""
+    spec = _logo_spec(tmp_path, "noise")
+    spec["elements"][0]["box"] = {
+        "x": 0, "y": 0, "cx": 12192000, "cy": 6858000,
+    }
+    findings = []
+    lint_render.check_logo_clearance(spec, findings, project_root=tmp_path)
+    assert _by_check(findings) == {"logo_clearance": "warn"}
+
+
+def test_logo_over_busy_slide_background_warns(tmp_path):
+    """The schema-level background must receive the same clearance check."""
+    spec = _logo_spec(tmp_path, "noise")
+    spec["elements"] = [spec["elements"][1]]
+    spec["background"] = {
+        "asset": "hero.png",
+        "box": {"x": 0, "y": 0, "cx": 12192000, "cy": 6858000},
+    }
+    findings = []
+    lint_render.check_logo_clearance(spec, findings, project_root=tmp_path)
+    assert _by_check(findings) == {"logo_clearance": "warn"}
+
+
 def test_logo_over_clean_panel_is_silent(tmp_path):
     """A logo over a uniform dark panel (a black molecule gap) is fine and
     must not warn — that is the 'some overlaps are OK' case."""
     findings = []
     lint_render.check_logo_clearance(
         _logo_spec(tmp_path, (0, 0, 0)), findings, project_root=tmp_path)
+    assert findings == []
+
+
+def test_logo_over_clean_full_bleed_imagery_is_silent(tmp_path):
+    spec = _logo_spec(tmp_path, (0, 0, 0))
+    spec["elements"][0]["box"] = {
+        "x": 0, "y": 0, "cx": 12192000, "cy": 6858000,
+    }
+    findings = []
+    lint_render.check_logo_clearance(spec, findings, project_root=tmp_path)
+    assert findings == []
+
+
+def test_logo_over_clean_slide_background_is_silent(tmp_path):
+    spec = _logo_spec(tmp_path, (0, 0, 0))
+    spec["elements"] = [spec["elements"][1]]
+    spec["background"] = {
+        "asset": "hero.png",
+        "box": {"x": 0, "y": 0, "cx": 12192000, "cy": 6858000},
+    }
+    findings = []
+    lint_render.check_logo_clearance(spec, findings, project_root=tmp_path)
     assert findings == []
 
 

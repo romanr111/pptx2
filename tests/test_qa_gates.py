@@ -199,6 +199,60 @@ def test_placed_image_partial_sidecar_is_an_error(tmp_path):
     assert _by_check(findings) == {"placed_image_provenance": "error"}
 
 
+# -------------------------------------------------------- logo_clearance --
+
+def _logo_spec(tmp_path, hero_fill, hero_size=(60, 60)):
+    """A hero image (filled with `hero_fill`) plus a logo overlapping it."""
+    from PIL import Image
+    import numpy as np
+    hero = tmp_path / "hero.png"
+    if hero_fill == "noise":
+        Image.fromarray((np.random.default_rng(0).random((*hero_size, 3)) * 255)
+                        .astype("uint8")).save(hero)
+    else:
+        Image.new("RGB", hero_size, hero_fill).save(hero)
+    Image.new("RGB", (10, 10)).save(tmp_path / "logo.png")
+    return _spec(elements=[
+        {"id": "hero", "type": "image", "asset": "hero.png", "z": 1,
+         "box": {"x": 8000000, "y": 0, "cx": 4000000, "cy": 6858000}},
+        {"id": "brand", "type": "image", "role": "event-logo", "asset": "logo.png",
+         "z": 5, "box": {"x": 9000000, "y": 200000, "cx": 900000, "cy": 1100000}},
+    ])
+
+
+def test_logo_over_busy_imagery_warns(tmp_path):
+    """The exact miss that shipped once: a brand mark placed on top of a
+    glossy render instead of clean background."""
+    findings = []
+    lint_render.check_logo_clearance(
+        _logo_spec(tmp_path, "noise"), findings, project_root=tmp_path)
+    assert _by_check(findings) == {"logo_clearance": "warn"}
+
+
+def test_logo_over_clean_panel_is_silent(tmp_path):
+    """A logo over a uniform dark panel (a black molecule gap) is fine and
+    must not warn — that is the 'some overlaps are OK' case."""
+    findings = []
+    lint_render.check_logo_clearance(
+        _logo_spec(tmp_path, (0, 0, 0)), findings, project_root=tmp_path)
+    assert findings == []
+
+
+def test_logo_with_no_overlap_is_silent(tmp_path):
+    from PIL import Image
+    Image.new("RGB", (60, 60), (0, 0, 0)).save(tmp_path / "hero.png")
+    Image.new("RGB", (10, 10)).save(tmp_path / "logo.png")
+    spec = _spec(elements=[
+        {"id": "hero", "type": "image", "asset": "hero.png", "z": 1,
+         "box": {"x": 8000000, "y": 3000000, "cx": 4000000, "cy": 3858000}},
+        {"id": "brand", "type": "image", "role": "event-logo", "asset": "logo.png",
+         "z": 5, "box": {"x": 900000, "y": 200000, "cx": 900000, "cy": 1100000}},
+    ])
+    findings = []
+    lint_render.check_logo_clearance(spec, findings, project_root=tmp_path)
+    assert findings == []
+
+
 # ----------------------------------------------------- embed_font_license --
 
 def test_deck_level_embedded_font_without_license_warns(tmp_path):

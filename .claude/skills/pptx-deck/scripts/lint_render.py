@@ -217,6 +217,79 @@ def check_bbox_overlap(spec, findings):
                 f"{frac:.0%} of the smaller box's area"))
 
 
+def check_logo_clearance(spec, findings, project_root=PROJECT_ROOT):
+    """A brand mark / logo must sit on CLEAN background, not on top of hero
+    imagery. A logo over a large uniform panel (a black molecule gap, a white
+    margin) reads fine; a logo over glossy spheres or a photo reads as a
+    collision -- and that is a *preventable* mistake (move the mark to a clear
+    corner, or open space behind it). bbox_overlap alone can't tell these
+    apart (both are just image+image overlaps), which is exactly how a
+    logo-on-spheres slide slipped through review once.
+
+    So: for each role~logo image, sample the pixels of whatever image sits
+    directly behind it (topmost lower-z, non-backdrop image) inside the logo's
+    box, and use the region's luminance spread to separate "clean panel"
+    (low std) from "busy imagery" (high std). Warn-only -- like check_contrast
+    it is geometrically exact for fit:stretch and a reasonable estimate for
+    contain/cover, never a silent skip. The mandatory visual review must still
+    confirm every flagged mark by eye.
+    """
+    elements = spec["elements"]
+    sw, sh = spec["slide"]["width_emu"], spec["slide"]["height_emu"]
+
+    def is_backdrop(el):
+        b = el["box"]
+        return b["x"] <= 0 and b["y"] <= 0 and b["cx"] >= sw and b["cy"] >= sh
+
+    def is_logo(el):
+        return el["type"] == "image" and "logo" in (el.get("role") or "").lower()
+
+    for logo in elements:
+        if not is_logo(logo):
+            continue
+        z = logo.get("z", 0)
+        lb = logo["box"]
+        behind = [e for e in elements
+                  if e["type"] == "image" and e is not logo and not is_logo(e)
+                  and not is_backdrop(e) and e.get("z", 0) < z
+                  and boxes_overlap_emu(e["box"], lb) > 0]
+        if not behind:
+            continue
+        top = max(behind, key=lambda e: e.get("z", 0))
+        img_path = project_root / top["asset"]
+        busy = None
+        if img_path.is_file():
+            try:
+                img = Image.open(img_path).convert("RGB")
+                iw, ih = img.size
+                tb = top["box"]
+                x0 = max(0, int((lb["x"] - tb["x"]) / tb["cx"] * iw))
+                y0 = max(0, int((lb["y"] - tb["y"]) / tb["cy"] * ih))
+                x1 = min(iw, int((lb["x"] + lb["cx"] - tb["x"]) / tb["cx"] * iw))
+                y1 = min(ih, int((lb["y"] + lb["cy"] - tb["y"]) / tb["cy"] * ih))
+                if x1 > x0 and y1 > y0:
+                    crop = np.asarray(img.crop((x0, y0, x1, y1))).astype(np.float64)
+                    lum = 0.2126 * crop[..., 0] + 0.7152 * crop[..., 1] + 0.0722 * crop[..., 2]
+                    busy = float(lum.std())
+            except Exception:
+                busy = None
+        # busy std threshold ~35 (0-255): a uniform dark/light panel sits well
+        # below it; glossy spheres / a photo sit well above. When the pixels
+        # can't be sampled, fall back to a conservative geometric warn.
+        if busy is None:
+            findings.append(finding(
+                "warn", "logo_clearance", logo["id"],
+                f"logo '{logo['id']}' overlaps image '{top['id']}' — confirm the "
+                f"mark sits on clean background, not on top of the artwork"))
+        elif busy > 35:
+            findings.append(finding(
+                "warn", "logo_clearance", logo["id"],
+                f"logo '{logo['id']}' sits over busy imagery in '{top['id']}' "
+                f"(behind-region luminance std {busy:.0f} > 35) — a brand mark "
+                f"belongs on clean background; move it to a clear corner or open "
+                f"the space behind it (this is a preventable collision)"))
+
+
 def check_font_role_alignment(spec, assets_json, findings):
     """Nudge toward font_roles.heading/.body; never blocking -- the theme's
     declared intent is aspirational, not mandatory (this template's own
@@ -924,6 +997,7 @@ def lint(spec_path: Path, deck_path: Path = None):
     check_glyph_coverage(spec, lookup, failed_fonts, findings)
     check_text_fit(spec, lookup, failed_fonts, findings)
     check_bbox_overlap(spec, findings)
+    check_logo_clearance(spec, findings)
     check_font_role_alignment(spec, assets_json, findings)
     check_color_conformance(spec, assets_json, template_style, findings, deck=deck)
     check_contrast(spec, findings)

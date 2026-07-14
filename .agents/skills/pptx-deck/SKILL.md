@@ -95,7 +95,11 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   `build_deck.py <spec> --states` already ran): font-family conformance
   against `assets.json.fonts[].family` (the naming-trap catcher), glyph
   coverage, a render-free text-fit estimate (box vs. estimated line width/
-  height), bounding-box overlap, plus warn-only nudges (font-role/color
+  height), bounding-box overlap, **logo clearance** (samples what sits
+  behind each role-logo image and warns when a brand mark lands on busy
+  hero artwork instead of clean background — the preventable collision
+  bbox_overlap alone can't distinguish from intentional layering), plus
+  warn-only nudges (font-role/color
   alignment with the resolved theme, contrast, **watermark usage** —
   flags any `watermark_suspected` asset so unlicensed stock art can't ship
   silently, asset duplication, a render-based line-count confirmation).
@@ -163,7 +167,11 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   orchestrator for deck delivery: builds the full deck + per-slide .pptx
   files, runs `lint_render` on every slide, runs `lint_deck`, and writes
   one consolidated `qa_report.json`. Exits 1 on any error, 0 otherwise.
-  This is the only command that should be run before shipping a deck.
+  This is the only command that should be run before shipping a deck. Its
+  full-size per-slide renders land in `output/rendered/<stem>_qa/*.png` —
+  those PNGs are the evidence source for `pptx-designer`'s mandatory
+  self-verification loops (review at full resolution with targeted crops,
+  never from a downscaled contact sheet alone).
 
 ## Deck specs
 

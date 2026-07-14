@@ -227,20 +227,15 @@ def check_logo_clearance(spec, findings, project_root=PROJECT_ROOT):
     logo-on-spheres slide slipped through review once.
 
     So: for each role~logo image, sample the pixels of whatever image sits
-    directly behind it (topmost lower-z, non-backdrop image) inside the logo's
-    box, and use the region's luminance spread to separate "clean panel"
+    directly behind it (topmost lower-z image, including full-bleed art, or
+    slide.background) inside the logo's box, and use the region's luminance
+    spread to separate "clean panel"
     (low std) from "busy imagery" (high std). Warn-only -- like check_contrast
     it is geometrically exact for fit:stretch and a reasonable estimate for
     contain/cover, never a silent skip. The mandatory visual review must still
     confirm every flagged mark by eye.
     """
     elements = spec["elements"]
-    sw, sh = spec["slide"]["width_emu"], spec["slide"]["height_emu"]
-
-    def is_backdrop(el):
-        b = el["box"]
-        return b["x"] <= 0 and b["y"] <= 0 and b["cx"] >= sw and b["cy"] >= sh
-
     def is_logo(el):
         return el["type"] == "image" and "logo" in (el.get("role") or "").lower()
 
@@ -251,11 +246,15 @@ def check_logo_clearance(spec, findings, project_root=PROJECT_ROOT):
         lb = logo["box"]
         behind = [e for e in elements
                   if e["type"] == "image" and e is not logo and not is_logo(e)
-                  and not is_backdrop(e) and e.get("z", 0) < z
+                  and e.get("z", 0) < z
                   and boxes_overlap_emu(e["box"], lb) > 0]
-        if not behind:
+        if behind:
+            top = max(behind, key=lambda e: e.get("z", 0))
+        else:
+            top = spec.get("background")
+        if not top or boxes_overlap_emu(top["box"], lb) <= 0:
             continue
-        top = max(behind, key=lambda e: e.get("z", 0))
+        top_id = top.get("id", "background")
         img_path = project_root / top["asset"]
         busy = None
         if img_path.is_file():
@@ -279,12 +278,12 @@ def check_logo_clearance(spec, findings, project_root=PROJECT_ROOT):
         if busy is None:
             findings.append(finding(
                 "warn", "logo_clearance", logo["id"],
-                f"logo '{logo['id']}' overlaps image '{top['id']}' — confirm the "
+                f"logo '{logo['id']}' overlaps image '{top_id}' — confirm the "
                 f"mark sits on clean background, not on top of the artwork"))
         elif busy > 35:
             findings.append(finding(
                 "warn", "logo_clearance", logo["id"],
-                f"logo '{logo['id']}' sits over busy imagery in '{top['id']}' "
+                f"logo '{logo['id']}' sits over busy imagery in '{top_id}' "
                 f"(behind-region luminance std {busy:.0f} > 35) — a brand mark "
                 f"belongs on clean background; move it to a clear corner or open "
                 f"the space behind it (this is a preventable collision)"))
@@ -916,6 +915,7 @@ def check_ai_generated_review(spec, findings, project_root=PROJECT_ROOT):
 
 
 MAX_VISUAL_REVIEW_ITERATIONS = 3
+VALID_VISUAL_REVIEW_VERDICTS = {"pass", "pass_with_notes", "fail"}
 
 
 def check_visual_review(spec, findings):
@@ -931,6 +931,7 @@ def check_visual_review(spec, findings):
     }
 
     - Missing visual_review → warn (not yet reviewed)
+    - Present review without a known verdict → error
     - iteration > 3 → error (too many iterations without resolution)
     - verdict "fail" → error (unresolved visual issue)
     """
@@ -957,8 +958,13 @@ def check_visual_review(spec, findings):
             f"{MAX_VISUAL_REVIEW_ITERATIONS} — too many review cycles without "
             f"resolution; stop and reassess the slide design"))
 
-    verdict = review.get("verdict", "")
-    if verdict == "fail":
+    verdict = review.get("verdict")
+    if verdict not in VALID_VISUAL_REVIEW_VERDICTS:
+        findings.append(finding(
+            "error", "visual_review_verdict", "meta",
+            "meta.visual_review.verdict must be one of "
+            f"{sorted(VALID_VISUAL_REVIEW_VERDICTS)}, got {verdict!r}"))
+    elif verdict == "fail":
         issues = "; ".join(f.get("issue", "?") for f in review.get("findings", []))
         findings.append(finding(
             "error", "visual_review_failed", "meta",

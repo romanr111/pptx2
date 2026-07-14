@@ -464,19 +464,70 @@ conformance), not a hard requirement, especially on a template whose own
 either. Don't treat every such warn as something to fix; use judgment, and
 write down your reasoning either way.
 
-## Mandatory visual self-review (this is the actual quality bar, not the lint)
+## Mandatory self-verification -- SEVERAL loops across the whole process
 
 Zero lint errors only proves the spec is *mechanically* sound -- text fits,
 nothing overlaps, fonts resolve. It says nothing about whether the slide
-looks like a finished conference deck or like plain text dropped onto a
-white rectangle. **Passing lint is a prerequisite for review, not the
-finish line.**
+looks like a finished conference deck. **Passing lint is a prerequisite for
+review, not the finish line.**
 
-Once `lint_render.py` reports zero errors, build the final full-deck render
-(`state=None` -- the normal `build_deck.py <spec>` output, not a
-per-animation-step state file) and **actually look at the rendered PNG**.
-Critique it honestly against the same things a human designer would check,
-before anyone else sees it:
+The failure mode this guards against is real and has shipped: a single
+end-of-process review, judged from a downscaled contact sheet, misses small
+collisions and seams (a logo laid over spheres, a charcoal render's
+rectangle on a black slide, inconsistent logo sizes) -- and self-confirmation
+bias ("I already decided it's fine") lets them through. The fix is **not more
+deterministic code** (visual questions are the agent's judgment; determinism
+is reserved for objectively measurable facts -- see `pptx-deck/SKILL.md`).
+The fix is **discipline: verify at several checkpoints, from full-resolution
+evidence, against an explicit rubric, and end with an independent pass.**
+
+Run these **five self-verification loops**, each *iterate-to-clean* (same
+policy as the build/lint/react loop: fix what's wrong, re-render, re-look;
+cap 3 cycles per slide before you stop and reassess the design):
+
+- **Loop A -- Assets understood** (after `inventory.py` + the visual
+  catalog). Look at the media contact sheet and, for every image you plan to
+  place, name its **background type**: clean transparent alpha / dark
+  *charcoal* render / white *studio* photo. This is where the wrong mental
+  model gets caught: "black-on-black is seamless" is FALSE -- most 3D renders
+  sit on charcoal (~RGB 32,30,33), not pure black, and show a rectangle on a
+  black slide. Mark which assets need `seamless_hero.py`, and with which
+  `--bg` (`black` for dark renders, `white` for studio photos, `none` to
+  just feather an already-transparent PNG's cut edges).
+- **Loop B -- Plan sanity** (after `meta.outline` + `tokens`, before
+  building slides). Re-read the brief against the outline: every source block
+  placed or explicitly skipped (`meta.unplaced_material`); `tokens` cover
+  every colour and font you will actually use; one idea per slide. A cheap
+  "does the plan hold together" pass before you spend build effort.
+- **Loop C -- Per-slide critique** (after each slide builds). Look at the
+  slide's **full-resolution** render and walk the rubric below element by
+  element. Record the verdict in `meta.visual_review` (below).
+- **Loop D -- Deck consistency** (after the deck assembles). Look at the
+  whole deck as a set: one grid and rhythm; the logo is the **same artwork,
+  same size, same corner** on every slide; dark/light treatment is
+  consistent; the decorative motif is consistent. This is the pass that
+  catches "slide 1's logo is a big wordmark, slide 3's is a small stacked
+  mark".
+- **Loop E -- Independent fresh-eyes / adversarial pass** (final). Re-examine
+  deliberately hostile: "what would a picky client circle?" **Zoom every
+  corner** (is the mark on clean background?), **every internal image edge**
+  (any visible seam?), **every label that sits over imagery** (still
+  legible?). This is the loop that defeats self-confirmation -- treat the
+  deck as broken until each crop proves otherwise.
+
+### Evidence rule (this is what actually prevents the misses)
+
+Review only at **full resolution with targeted crops** -- never from one
+downscaled contact sheet, which is exactly how the collisions slipped
+through. `deck_qa.py` already writes full-size per-slide PNGs to
+`output/rendered/<stem>_qa/*.png`; from those, produce (ad-hoc, no new code
+required) the minimum evidence set: the full-size PNG of each slide, a crop
+of **each corner that carries a logo**, a crop of **each internal edge of
+each decorative image**, and a composite of any baked asset on the slide's
+actual background colour. Look at each one; do not conclude "pass" from the
+montage alone.
+
+### Rubric for Loops C and E (the explicit checklist -- walk it every time)
 
 - **Composition/hierarchy** -- does the eye land on the title first, then
   speaker, then credentials? Is visual weight balanced across the canvas, or
@@ -508,6 +559,23 @@ before anyone else sees it:
   render, a caption over a busy photo). These are the failure modes that a
   clean lint pass misses and only a full-size render exposes -- confirm them
   in the exported PNG, never in the spec alone.
+- **Logo / corner-mark clearance (check every one, every slide).** A brand
+  mark must sit on CLEAN, uniform background -- a black gap in a dark render,
+  an empty white margin -- never on top of hero artwork (glossy spheres, a
+  photo, a busy render). A logo laid over imagery is almost always a
+  *preventable* mistake, not an intentional overlap: when the mark and a
+  decorative element both want the same corner, MOVE ONE -- reposition the
+  decorative element to another clear area (it usually can go elsewhere), or,
+  if the hero must stay full-bleed, re-bake it so it dissolves to the slide
+  colour under the mark (`seamless_hero.py` with the mark's edge feathered).
+  `lint_render.py`'s `check_logo_clearance` samples what sits behind each
+  `role`-logo image and warns when it's busy (high luminance spread) vs. a
+  clean panel (low spread) -- treat that warn as a must-fix unless you have
+  confirmed by eye that the mark reads cleanly on a uniform area (a white
+  wordmark on a pure-black gap is fine; the same mark on lit spheres is not).
+  Keep every corner mark the SAME artwork and the SAME size across the deck;
+  mixing a horizontal wordmark on one slide and a stacked lockup on the next,
+  or different sizes, reads as unfinished.
 
 Record the outcome as a **structured `meta.visual_review` artifact** on each
 slide spec, not as prose you'll forget -- `lint_render.py`'s
@@ -535,12 +603,13 @@ error, just judged by eye instead of by script. A spec that lints clean but
 looks plain is not done. This step is what actually determines whether the
 output is "ready to go," not the JSON report.
 
-Once both the lint and the visual review hold up (or 3 iterations reached),
-hand the render to a human for final **design quality and template
-conformance** sign-off -- not a pixel-similarity check against any specific
-reference screenshot. Every real slide's ideal content differs; the target
-is *matching the quality bar* (composition, typography, finish) of a
-well-designed example, not reproducing one.
+Once lint is clean and all five loops hold up (Loop C per slide, Loops D and
+E across the deck, or 3 iterations reached), hand the render to a human for
+final **design quality and template conformance** sign-off -- not a
+pixel-similarity check against any specific reference screenshot. Every real
+slide's ideal content differs; the target is *matching the quality bar*
+(composition, typography, finish) of a well-designed example, not
+reproducing one.
 
 ## Tools this skill calls (owned by `pptx-deck`, not duplicated here)
 

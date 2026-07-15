@@ -34,10 +34,10 @@ from pptx.util import Emu, Pt
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_packaging import apply_packaging  # noqa: E402
 
-from common import PROJECT_ROOT, EMU_PER_INCH  # noqa: E402
+from common import PROJECT_ROOT, EMU_PER_INCH, resolve_output_root  # noqa: E402
 SCHEMA_PATH = PROJECT_ROOT / "specs" / "spec.schema.json"
 DECK_SCHEMA_PATH = PROJECT_ROOT / "specs" / "deck.schema.json"
-OUT = PROJECT_ROOT / "output"
+OUT = resolve_output_root()
 
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
@@ -226,7 +226,48 @@ def contain_box(box, img_w, img_h, anchor="center"):
     return {"x": x, "y": y, "cx": cx, "cy": cy}
 
 
+def fitted_image_geometry(box, img_w, img_h, fit="stretch", anchor="center"):
+    """Return the exact placement box and normalized source crop fractions."""
+    zero_crop = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
+    if fit == "stretch":
+        return {"placed_box": box, "source_crop": zero_crop}
+    if fit == "contain":
+        return {
+            "placed_box": contain_box(box, img_w, img_h, anchor),
+            "source_crop": zero_crop,
+        }
+    if fit != "cover":
+        raise ValueError(f"unknown image fit: {fit!r}")
+    crop = dict(zero_crop)
+    img_aspect, box_aspect = img_w / img_h, box["cx"] / box["cy"]
+    if img_aspect > box_aspect:
+        total = 1 - box_aspect / img_aspect
+        if anchor == "left":
+            crop["right"] = total
+        elif anchor == "right":
+            crop["left"] = total
+        else:
+            crop["left"] = crop["right"] = total / 2
+    else:
+        total = 1 - img_aspect / box_aspect
+        if anchor == "top":
+            crop["bottom"] = total
+        elif anchor == "bottom":
+            crop["top"] = total
+        else:
+            crop["top"] = crop["bottom"] = total / 2
+    return {"placed_box": box, "source_crop": crop}
+
+
 MEDIA_CACHE = OUT / "media_cache"
+
+
+def configure_output_root(value=None):
+    """Set this process's execution-artifact root before a CLI build."""
+    global OUT, MEDIA_CACHE
+    OUT = resolve_output_root(value)
+    MEDIA_CACHE = OUT / "media_cache"
+    return OUT
 
 
 def _optimize_image(path, box, fit, media_opt, anchor="center"):
@@ -306,27 +347,15 @@ def add_picture_fitted(slide, path, box, fit="stretch", anchor="center",
         return slide.shapes.add_picture(path, *emu_box(box))
     with PILImage.open(path) as img:
         iw, ih = img.size
+    geometry = fitted_image_geometry(box, iw, ih, fit=fit, anchor=anchor)
     if fit == "contain":
-        return slide.shapes.add_picture(path, *emu_box(contain_box(box, iw, ih, anchor)))
+        return slide.shapes.add_picture(path, *emu_box(geometry["placed_box"]))
     # fit == "cover" — anchor picks which side survives the crop
-    pic = slide.shapes.add_picture(path, *emu_box(box))
-    img_aspect, box_aspect = iw / ih, box["cx"] / box["cy"]
-    if img_aspect > box_aspect:
-        total = 1 - box_aspect / img_aspect
-        if anchor == "left":
-            pic.crop_right = total
-        elif anchor == "right":
-            pic.crop_left = total
-        else:
-            pic.crop_left = pic.crop_right = total / 2
-    else:
-        total = 1 - img_aspect / box_aspect
-        if anchor == "top":
-            pic.crop_bottom = total
-        elif anchor == "bottom":
-            pic.crop_top = total
-        else:
-            pic.crop_top = pic.crop_bottom = total / 2
+    pic = slide.shapes.add_picture(path, *emu_box(geometry["placed_box"]))
+    for side in ("left", "right", "top", "bottom"):
+        value = geometry["source_crop"][side]
+        if value:
+            setattr(pic, f"crop_{side}", value)
     return pic
 
 
@@ -737,7 +766,10 @@ def main():
                      help="also write per-animation-step static snapshot decks")
     ap.add_argument("--check-only", action="store_true", help="validate only, do not build")
     ap.add_argument("--out", type=Path, default=None, help="override output .pptx path")
+    ap.add_argument("--output-root", type=Path, default=None,
+                    help="root for execution artifacts (defaults to output/)")
     args = ap.parse_args()
+    configure_output_root(args.output_root)
 
     spec = json.loads(args.spec.read_text())
 

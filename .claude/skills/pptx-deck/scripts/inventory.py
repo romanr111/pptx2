@@ -6,9 +6,11 @@ the (future) designer skill resolves ambiguity by looking at the thumbnails
 this script also produces, not by this script guessing harder.
 
 Usage:
-  inventory.py            writes out/assets.json + out/template_style.json
+  inventory.py --template path/to/template.pptx [--renderer docker|host]
+                          writes out/assets.json + out/template_style.json
   inventory.py --no-thumbnails   skip the (slow) template render pass
 """
+import argparse
 import json
 import subprocess
 import sys
@@ -279,13 +281,27 @@ def inventory_text():
 # ------------------------------------------------------------------ main --
 
 def main():
-    with_thumbnails = "--no-thumbnails" not in sys.argv
-    OUT.mkdir(exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--template", type=Path, default=template_style.DEFAULT_TEMPLATE,
+                        help="production template to inventory")
+    parser.add_argument("--no-thumbnails", action="store_true",
+                        help="skip the slow template render pass")
+    parser.add_argument("--renderer", choices=("docker", "host"), default="docker",
+                        help="thumbnail renderer; docker is the delivery default")
+    args = parser.parse_args()
+    template_path = args.template.resolve()
+    OUT.mkdir(parents=True, exist_ok=True)
 
     print("extracting template style guide...")
-    style = template_style.extract(with_thumbnails=with_thumbnails)
+    style = template_style.extract(template_path, with_thumbnails=not args.no_thumbnails,
+                                   renderer=args.renderer)
     (OUT / "template_style.json").write_text(json.dumps(style, ensure_ascii=False, indent=2))
     print("wrote", OUT / "template_style.json")
+    census = style.get("media_census", [])
+    if census:
+        print(f"media census: {len(census)} template images -> "
+              f"{style.get('media_census_sheet', 'out/media_census.png')} "
+              f"(view every tile before designing; ranking is a hint, not a filter)")
 
     print("classifying images...")
     images = inventory_images()

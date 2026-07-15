@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_deck import PROJECT_ROOT, validate_deck  # noqa: E402
+from common import resolve_output_root  # noqa: E402
 
 
 def finding(severity, check, where, message):
@@ -188,12 +189,14 @@ def check_density(deck, slides, names, findings):
             f"reading as cluttered"))
 
 
-def check_package_size(deck, deck_path, findings, project_root=PROJECT_ROOT):
+def check_package_size(deck, deck_path, findings, project_root=PROJECT_ROOT,
+                       output_root=None):
     budget_mb = deck.get("packaging", {}).get("max_package_mb")
     if not budget_mb:
         return
     stem = Path(deck_path).stem.replace(".deck", "")
-    built = project_root / "output" / f"{stem}.pptx"
+    built = resolve_output_root(
+        output_root, default_root=Path(project_root) / "output") / f"{stem}.pptx"
     if not built.is_file():
         findings.append(finding(
             "warn", "package_size", "deck",
@@ -226,8 +229,17 @@ def check_role_alignment(deck, slides, names, findings):
                 f"role '{role}' is not on one grid line across slides ({detail})"))
 
 
-def lint_deck(deck_path, project_root=PROJECT_ROOT):
+def lint_deck(deck_path, project_root=PROJECT_ROOT, static_only=False,
+              package_only=False, output_root=None):
+    if static_only and package_only:
+        raise ValueError("static_only and package_only are mutually exclusive")
     deck = json.loads(Path(deck_path).read_text())
+    if package_only:
+        findings = []
+        check_package_size(
+            deck, deck_path, findings, project_root, output_root=output_root)
+        return {"deck": str(deck_path), "n_errors": 0,
+                "n_warns": len(findings), "findings": findings}
     errors, slide_specs = validate_deck(deck, project_root)
     findings = [finding("error", "deck_valid", "deck", e) for e in errors]
     if not errors:
@@ -238,7 +250,10 @@ def lint_deck(deck_path, project_root=PROJECT_ROOT):
         check_margins(deck, slide_specs, names, findings)
         check_density(deck, slide_specs, names, findings)
         check_role_alignment(deck, slide_specs, names, findings)
-        check_package_size(deck, deck_path, findings, project_root)
+        if not static_only:
+            check_package_size(
+                deck, deck_path, findings, project_root,
+                output_root=output_root)
     n_err = sum(1 for f in findings if f["severity"] == "error")
     return {"deck": str(deck_path), "n_errors": n_err,
             "n_warns": len(findings) - n_err, "findings": findings}
@@ -248,8 +263,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("deck", type=Path)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--output-root", type=Path, default=None)
+    stage = ap.add_mutually_exclusive_group()
+    stage.add_argument("--static-only", action="store_true")
+    stage.add_argument("--package-only", action="store_true")
     args = ap.parse_args()
-    report = lint_deck(args.deck)
+    report = lint_deck(
+        args.deck, static_only=args.static_only,
+        package_only=args.package_only, output_root=args.output_root)
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if args.out:
         args.out.write_text(text)

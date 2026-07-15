@@ -22,13 +22,18 @@ primitives — never a particular slide's layout, fonts, or positions.
 
 ## Scripts
 
-All under `scripts/`, run with the project venv (`.venv/bin/python`, set up
-by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
+All under `scripts/`, run with the project venv. In a new client checkout,
+first run `python3 scripts/setup_client.py --template path/to/template.pptx
+--output-root output/<client-run>`; it creates `.venv`, synchronizes the
+Codex-facing skill mirror, verifies Docker and Poppler, pulls the pinned
+renderer image, and runs the required template preflight. Host LibreOffice is
+an explicit `--renderer host` development fallback:
 
 - **`styleguide_profile.py`** — converts `assets/styleguide.rtf` into
   `out/styleguide_profile.json`, a compact design-phase taste contract used by
   `pptx-designer`, `asset_resolver.py`, and `lint_render.py`.
-- **`inventory.py`** — walks `assets/` and the template `.pptx`, writes
+- **`inventory.py --template <path> [--renderer docker|host]`** - walks `assets/` and the supplied
+  template `.pptx`, writes
   `out/assets.json` (per-image classification + watermark flag, per-font
   name-table families/weights + role guess, per-text-file parsed blocks) and
   `out/template_style.json` (theme fonts/colors, per-layout placeholder
@@ -42,7 +47,15 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   some assets are only traceable via *a* slide that references them
   directly, not every slide that visually shows them — see
   `out/template_visual_catalog.json`'s caveats). Read this before authoring
-  a spec by hand or designing a new slide type.
+  a spec by hand or designing a new slide type. It also dumps a **full media
+  census**: every embedded template image (all formats, including media
+  referenced by no slide) is extracted to `out/media_census/` and tiled onto
+  one labeled contact sheet `out/media_census.png` (basename · WxH · reuse
+  count), recorded as `template_style.json.media_census`. This is
+  deliberately *unfiltered* — `logo_candidates`/`media_reuse_ranked` are
+  discovery hints, and their filtering once hid the template's premium
+  white-studio renders; the census guarantees the designer can see every
+  asset. `pptx-designer`'s Loop A gates on reviewing it.
 - **`out/template_visual_catalog.json`** — a cached, human/LLM-written
   description of what the template's own real slides actually look like
   (grouped by distinct layout via `slide_layout_map`, plus notes on
@@ -54,8 +67,18 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   once per template by following the bootstrap procedure documented in
   `pptx-designer/SKILL.md`'s Inputs section (not by a deterministic
   script — it requires actually looking at the thumbnails), and reused
-  cheaply after that; stale if its `n_slides_total` no longer matches
-  `template_style.json.thumbnails`'s count.
+  cheaply after that; stale if its `template_fingerprint` no longer matches
+  `template_style.json.template_fingerprint`, or if its `n_slides_total` no
+  longer matches `template_style.json.thumbnails`'s count.
+  Its reviewed starter registry records that fingerprint plus
+  `approved_assets` (semantic
+  id/role, background variant, template source-media path, canonical
+  extracted path, SHA-256, provenance sidecar, and usage notes) and
+  `approved_fonts` (exact heading/body names, permitted families, family
+  budget, and naming traps). `template_registry.py` validates template
+  identity, files, hashes, provenance, and slide font usage before execution.
+  Older catalogs remain readable, but complete the registry before new
+  authoring decisions.
 - **`reference_style.py <reference.pdf> --event <slug>`** — the *design
   reference* ingestion path: organizer-provided PDFs (e.g. Canva exports)
   are look-and-feel references, **not** production templates. Writes
@@ -76,23 +99,36 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   at the thumbnails) captures what the reference's designer actually did —
   layouts, motifs, color roles — and goes stale when its `n_pages_total`
   no longer matches the PDF.
-- **`build_deck.py <spec.json|deck.json> [--states] [--check-only] [--out PATH]`** —
+- **`build_deck.py <spec.json|deck.json> [--states] [--check-only] [--out PATH] [--output-root DIR]`** -
   validates a spec or deck (JSON Schema + cross-checks: duplicate ids,
   missing assets, off-slide boxes without `allow_offslide_bleed`, animation
   targets that don't exist) and builds it. `--states` also writes one
   static snapshot deck per animation step to
   `output/states/<spec-stem>/state{k}.pptx` (state k = every element whose
   earliest entrance step is <= k). Deck specs assemble all member slides
-  into one .pptx.
-- **`render.py`** — `render(pptx_path, outdir) -> png_path` for single-slide
+  into one .pptx. `--out` remains the explicit primary deck-file override;
+  `--output-root` controls the default deck path and supporting artifacts.
+- **`render.py`** - `render(pptx_path, outdir) -> png_path` for single-slide
   .pptx (LO PNG export); `render_all(pptx, outdir) -> [png_path]` for
   multi-slide decks via PDF→pdftoppm (LO PNG export only produces the
-  first slide). `render_all` caches by file hash so re-running deck_qa
-  doesn't re-render an unchanged deck. Imported by `verify_reference.py`,
-  `lint_render.py`, and `deck_qa.py`.
-- **`lint_render.py <spec.json> [--out PATH]`** — deterministic critique of a
-  spec with no reference screenshot to compare against (assumes
-  `build_deck.py <spec> --states` already ran): font-family conformance
+  first slide). Docker with the pinned LibreOffice image is the default;
+  it has no network, read-only inputs, and output-only writes. Pass
+  `renderer="host"` only for local development fallback. `render_all` caches
+  by file hash so re-running deck_qa doesn't re-render an unchanged deck,
+  serializes Docker LibreOffice conversions across output roots, renders to
+  a sibling staging directory, validates page count/readability/dimensions,
+  and publishes only the complete render set.
+  Imported by `verify_reference.py`, `lint_render.py`, and `deck_qa.py`.
+- **`preflight.py --template <path> --renderer docker|host --output-root <dir>`** -
+  must pass before design. It opens the real template, confirms both schemas
+  and writable output storage, converts the template to a non-empty PDF, then
+  proves `pdftoppm` can create a PNG. Its JSON report records converter output
+  on failure.
+- **`lint_render.py <spec.json> [--static-only | --rendered-page PNG] [--out PATH] [--output-root DIR]`** - deterministic critique of a
+  spec with no reference screenshot to compare against. `--static-only`
+  runs all render-free checks; `--rendered-page` runs text-structure checks
+  against the corresponding assembled-deck page. The no-flag standalone
+  mode retains its legacy built-slide behavior. Checks include font-family conformance
   against `assets.json.fonts[].family` (the naming-trap catcher), glyph
   coverage, a render-free text-fit estimate (box vs. estimated line width/
   height), bounding-box overlap, **logo clearance** (samples what sits
@@ -108,6 +144,18 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   checkable; it cannot judge whether a slide actually looks good — that's
   the `pptx-designer` skill's mandatory visual-self-review step, not
   something this script attempts.
+- **`template_registry.py`** - validates reviewed starter entries in
+  `out/template_visual_catalog.json` against the current template content
+  fingerprint and facts, asset
+  bytes/provenance, exact inventoried font names, family budget, known naming
+  traps, and the families used by member slide specs. `deck_qa.py` runs it in
+  the static phase.
+- **`qa_crops.py <deck-spec> --render-dir DIR --output-root DIR`** - reads
+  actual full-resolution page dimensions, reuses builder image-fit/anchor
+  geometry, and atomically writes every logo-corner and internal non-logo
+  image-edge crop. `qa_crops/manifest.json` maps each crop to slide, element
+  id, type, source page, render dimensions, and pixel bounds. It prepares
+  evidence only; it does not replace full-page or adversarial review.
 - **`native_packaging.py`** (imported by `build_deck.py`, not a CLI) —
   post-save package surgery driven by the spec's optional `packaging`
   object: swaps the built deck's theme part so PowerPoint's color/font
@@ -163,15 +211,30 @@ by `.claude/skills/pptx-title-slide/scripts/setup_env.sh`):
   standard, this is also the correct conformance source in fallback mode,
   where `lint_render.py`'s template-theme warns don't apply.
 
-- **`deck_qa.py <name.deck.json> [--out qa_report.json]`** — the single
-  orchestrator for deck delivery: builds the full deck + per-slide .pptx
-  files, runs `lint_render` on every slide, runs `lint_deck`, and writes
-  one consolidated `qa_report.json`. Exits 1 on any error, 0 otherwise.
+- **`deck_qa.py <name.deck.json> [--static-only] [--out qa_report.json] [--output-root DIR] [--delivery]`** - the single
+  orchestrator for deck delivery. It locks the output root, runs registry,
+  schema, asset/font/provenance, per-slide static, and deck-token checks first,
+  and stops before execution on blocking errors. A clean full run builds only
+  the assembled deck, renders it once, analyzes each actual assembled page,
+  checks package size, prepares crops, and writes one consolidated report.
+  Progress and timing are flushed per stage. `qa_report.partial.json` is
+  updated atomically and promoted to `qa_report.json` only after a complete
+  QA result. It exits 1 on QA/execution errors, 2 on a busy output-root lock,
+  and 0 otherwise.
   This is the only command that should be run before shipping a deck. Its
-  full-size per-slide renders land in `output/rendered/<stem>_qa/*.png` —
+  full-size per-slide renders land in `<output-root>/rendered/<stem>_qa/*.png` -
   those PNGs are the evidence source for `pptx-designer`'s mandatory
   self-verification loops (review at full resolution with targeted crops,
   never from a downscaled contact sheet alone).
+  `--delivery` also enforces the **styleguide aesthetic gate**: any unwaived
+  `styleguide_visual_weight` / `styleguide_text_budget` finding (from
+  `lint_render`, when `out/styleguide_profile.json` exists) blocks delivery.
+  A slide waives a gate with an explicit, reviewable
+  `meta.styleguide_waiver: [{"check": "styleguide_visual_weight", "reason":
+  "..."}]` (which downgrades that finding warn→info); `deck_qa` lists every
+  blocking and waived item under `delivery.styleguide`. This makes "we
+  deliberately shipped this text-led" a surfaced decision, not a buried
+  `designer_rationale` — the default is a premium hero visual per slide.
 
 ## Deck specs
 
@@ -259,8 +322,12 @@ itself: `build_deck.py specs/title_slide.spec.json --states` followed by
 ## How to run (inventory, for a new slide/deck)
 
 ```bash
-.venv/bin/python .claude/skills/pptx-deck/scripts/inventory.py
-# -> out/assets.json, out/template_style.json, out/thumbnails/
+.venv/bin/python .claude/skills/pptx-deck/scripts/preflight.py \
+  --template assets/template.pptx --renderer docker --output-root output/<run-name>
+.venv/bin/python .claude/skills/pptx-deck/scripts/inventory.py \
+  --template assets/template.pptx --renderer docker
+# -> out/assets.json, out/template_style.json, out/thumbnails/,
+#    out/media_census/ + out/media_census.png (view EVERY tile before designing)
 ```
 
 ## How to run (lint a spec with no reference screenshot)
@@ -273,16 +340,20 @@ itself: `build_deck.py specs/title_slide.spec.json --states` followed by
 ## How to run (full deck QA — the only delivery path)
 
 ```bash
-.venv/bin/python .claude/skills/pptx-deck/scripts/deck_qa.py specs/<name>.deck.json --out output/qa_report.json
+.venv/bin/python .claude/skills/pptx-deck/scripts/deck_qa.py specs/<name>.deck.json \
+  --static-only --output-root output/<run-name>
+.venv/bin/python .claude/skills/pptx-deck/scripts/deck_qa.py specs/<name>.deck.json \
+  --delivery --renderer docker --output-root output/<run-name>
 ```
 
-`deck_qa.py` is the single orchestrator that chains: build_deck → per-slide
-build → lint_render (each slide) → lint_deck → one consolidated
-`qa_report.json`. It exits 1 on any error finding (text_fit, schema,
-provenance, overlap, deck lint) and 0 otherwise. **Always run this before
-shipping a deck** — it replaces the manual sequence of build + lint steps
-that previously left gaps (e.g. slide 2 was never linted, lint_render was
-run on the deck spec which it does not read, errors went to delivery).
+`deck_qa.py` is the single orchestrator. Run the static-only pass after the
+first spec pass so schema, text fit, provenance, font, overlap, and deck-token
+errors are corrected before Docker work. Full QA performs one assembled build
+and one authoritative render, then uses those pages for rendered lint and crop
+evidence. A final `--delivery` run reuses the cached render when deck content
+is unchanged and adds the visual-review verdict gate. **Always run delivery QA
+before shipping a deck** - it replaces manual build, lint, render, and crop
+sequences that previously left gaps.
 
 ## Known gaps (by design, not yet in scope)
 

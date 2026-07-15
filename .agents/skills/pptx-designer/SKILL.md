@@ -1,6 +1,6 @@
 ---
 name: pptx-designer
-description: Author a new slide spec (specs/<name>.spec.json) from the facts layer (out/assets.json, out/template_style.json) and raw slide copy -- the "Decisions" layer of the pptx pipeline. Use when asked to design, draft, or author a slide spec from scratch, as opposed to building/rendering/verifying one that already exists.
+description: Author a new slide spec under specs/ from the facts layer (out/assets.json, out/template_style.json) and raw slide copy -- the "Decisions" layer of the pptx pipeline. Use when asked to design, draft, or author a slide spec from scratch, as opposed to building/rendering/verifying one that already exists.
 ---
 
 # pptx-designer
@@ -31,21 +31,31 @@ and iterate on it.
   `media_reuse_ranked` (media sorted by how many distinct slides reuse it --
   a high count is a strong signal of a decorative/brand asset, not one-off
   content).
+- `out/media_census.png` + `out/media_census/` -- **view the contact sheet
+  FIRST; it is the complete template image library (every format, every file,
+  including media referenced by no slide), not a ranked or logo-filtered
+  subset.** `media_reuse_ranked` and `logo_candidates` are discovery *hints*,
+  never filters -- the best hero image is often a one-off (`used 0x`/`used 1x`)
+  premium render the ranking buries. Categorize every tile before designing
+  (hero candidate / brand mark / decoration / unusable) -- see Loop A.
 - `out/template_visual_catalog.json` -- **read this before making any
   color-mode, background, or decorative-asset decision.** It's a cached,
   human/LLM-written description of what the template's own real slides
   actually look like (grouped by distinct layout, plus notes on recurring
   visual assets), because `out/template_style.json` alone only tells you
   numeric facts, not what the template's own designer actually *did* with
-  them. If it doesn't exist yet, or its `n_slides_total` doesn't match the
-  current `out/template_style.json.thumbnails` count, build it first:
+  them. If it doesn't exist yet, its `template_fingerprint` doesn't match
+  `out/template_style.json.template_fingerprint`, or its `n_slides_total`
+  doesn't match the current `out/template_style.json.thumbnails` count, build
+  it first and copy the current fingerprint into the catalog:
   1. Use `slide_layout_map` to find the distinct layouts actually in use
      (dedupe by `layouts_index`) -- you don't need to look at every slide,
      only one representative thumbnail per distinct layout.
   2. Use `media_reuse_ranked`'s top entries to find slides where a reused
      asset appears, and look at those thumbnails too.
-  3. For each, look at the thumbnail (`out/thumbnails/template/slide-NN.png`,
-     numbered by presentation order) and write a `layouts_observed` entry
+  3. For each, look at the corresponding path in `template_style.json`'s
+     `thumbnails` array (numbered by presentation order and cache-keyed by
+     template plus renderer) and write a `layouts_observed` entry
      (color mode, what's on it, any reusable component you notice) and a
      `recurring_assets` entry for anything that shows up on more than one
      slide (note its source media file if `slide_media_map` resolves one --
@@ -54,6 +64,13 @@ and iterate on it.
      computed.
   This is a one-time cost per template, not per slide -- don't redo it for
   every new spec once it exists and isn't stale.
+  Before authoring, confirm its reviewed starter registry is current. Reuse
+  `approved_assets` before extracting more template media, and reuse the exact
+  `approved_fonts.heading_family` / `body_family` strings within the permitted
+  family budget before considering variants. Every approved asset must exist,
+  match its SHA-256, and have its declared template provenance sidecar.
+  `deck_qa.py --static-only` validates the registry and rejects unapproved or
+  known-trap font strings used by the deck.
 - `out/design_reference.json` + `out/reference_visual_catalog.json`
   (optional, present when the event supplied a *design reference* — a PDF
   look-and-feel export rather than a real template). **Precedence rule:**
@@ -120,6 +137,36 @@ inside the JSON.
 These are written against this project's actual facts as a worked example;
 apply the same kind of reasoning to different facts on a different template.
 
+**Art direction (do this before the per-slide calls below).** These are the
+levers that separate an "ultra-premium editorial" deck from a "clean corporate
+template" one -- the difference a styleguide like "Apple Keynote / Nature
+Medicine" is actually asking for:
+
+- **Deck rhythm / treatment variety.** Vary dark/light across the deck (e.g.
+  dark bookends: cover + closing, light middle). Do NOT stamp one canvas motif
+  (a black top band, one accent) on every slide -- that reads as a template,
+  not art direction. Consult the template's *full* layout variety (both its
+  dark title treatment AND its clean imagery-led content slides), not a single
+  motif you locked onto first.
+- **Hero imagery per slide (default).** Every content slide carries ONE
+  *distinct* premium visual at the styleguide's `visual_ratio_target` (bake it
+  seamless to that slide's background with `seamless_hero.py`). Prefer a
+  different template render per slide -- reusing the same small accent on every
+  slide is monotone and fails the visual-weight gate. A different white-studio
+  render, a dark moody bleed, a scattered-element constellation: use the range
+  the census reveals.
+- **Brand-mark selection.** The census usually holds several mark variants
+  (a wide wordmark AND a compact stacked lockup). Pick the *refined* one that
+  fits the corner, sized as a mark not a banner, and keep it identical across
+  the deck (Loop D).
+- **Portrait / hero-element scale.** On a cover, the portrait is a hero
+  element -- large, full-height, seamlessly dissolved into the background --
+  not a small cutout tucked in a corner.
+- **Accent on the right background.** Use the brand/styleguide accent (incl.
+  gold) only where it *reads*: bright/gold accents belong on dark backgrounds,
+  not on white (gold-on-white fails contrast). If the styleguide calls for a
+  gold accent, that is a reason to give the deck dark surfaces where it can land.
+
 **Consult the template's own worked examples before picking a color mode.**
 Don't default to a light/plain treatment just because it's safe -- check
 `out/template_visual_catalog.json` for the layout closest to your slide's
@@ -185,8 +232,8 @@ are not enough to identify which candidate is actually a usable brand
 wordmark versus, say, a generic app icon or an unrelated graphic that
 happened to pass the extraction heuristics. **Visually inspect** every
 candidate before choosing -- extract each with `extract_media.py` (below)
-and look at the resulting PNGs, or check the template's own thumbnails at
-`out/thumbnails/template/`. Don't pick by `variant`/`opaque_frac` alone.
+and look at the resulting PNGs, or check the template-thumbnail paths listed
+in `out/template_style.json`. Don't pick by `variant`/`opaque_frac` alone.
 Also check the ink color actually works on the background you're placing it
 against -- a `light_ink` (white) logo is invisible on a light slide;
 `extract_media.py --recolor dark|light` can flip it if the shape you want is
@@ -247,8 +294,9 @@ verification notes in the sidecar; they are allowed with lint warnings and must
 be called out to the user before final delivery.
 
 **Delivery: deck_qa.py is the only path.** Never ship a deck without
-running `deck_qa.py` — it builds the deck, runs `lint_render` on every
-slide, runs `lint_deck`, and consolidates everything into one
+running `deck_qa.py` - it statically validates every slide first, builds and
+renders the assembled deck once, analyzes the actual assembled pages, prepares
+QA crops, runs cross-slide/package checks, and consolidates everything into one
 `qa_report.json` with exit 1 on any error. The manual sequence of
 build + lint steps left gaps in the past (slides never linted,
 lint_render run on the wrong file type, errors shipped to delivery).
@@ -436,14 +484,30 @@ you're deliberately not using.
 
 ## The build/lint/react loop
 
-If `out/styleguide_profile.json` exists, treat `styleguide_*` lint warnings as
-visual QA feedback: either revise the spec, or record a clear rationale in
-`meta.styleguide_application` for why the slide intentionally diverges.
+If `out/styleguide_profile.json` exists, `styleguide_*` findings are visual QA
+feedback. The two aesthetic **gates** -- `styleguide_visual_weight` (slide is
+not visual-led) and `styleguide_text_budget` (too many lines) -- are NOT
+free to dismiss with prose: either fix the slide, or record an explicit
+`meta.styleguide_waiver: [{"check": "styleguide_visual_weight", "reason": "..."}]`.
+`deck_qa --delivery` **blocks** on any unwaived gate finding and surfaces every
+waiver to the user under `delivery.styleguide` -- so "we deliberately shipped
+this text-led" is an explicit, reviewable decision, never a buried rationale.
+The default is the opposite of text-led: **every content slide carries a
+substantial premium hero visual at the styleguide's `visual_ratio_target`.**
+Baking a white/black seamless hero from a template render (`seamless_hero.py`)
+is the FIRST move, not a fallback; a small repeated accent shape is not a
+substitute for a hero.
 
 ```
-build_deck.py specs/<name>.spec.json --states
-lint_render.py specs/<name>.spec.json
+deck_qa.py specs/<name>.deck.json --static-only --output-root output/<run-name>
+deck_qa.py specs/<name>.deck.json --renderer docker --output-root output/<run-name>
 ```
+
+Run static-only after the first complete spec pass and correct every blocker
+before the first render. Run full QA once, inspect the pages and generated
+crops, and rerun only when rendered content changes. After visual-review
+metadata is recorded, use `--delivery`; unchanged content reuses the validated
+render cache.
 
 Capped at **3 iterations**. Reaction policy, to avoid ping-ponging on
 findings that don't actually indicate a problem:
@@ -486,8 +550,14 @@ policy as the build/lint/react loop: fix what's wrong, re-render, re-look;
 cap 3 cycles per slide before you stop and reassess the design):
 
 - **Loop A -- Assets understood** (after `inventory.py` + the visual
-  catalog). Look at the media contact sheet and, for every image you plan to
-  place, name its **background type**: clean transparent alpha / dark
+  catalog). **This is a hard gate: Loop A is not complete until EVERY tile in
+  `out/media_census.png` has been viewed at full size and categorized** (hero
+  candidate / brand mark / decoration / unusable). Do not let
+  `media_reuse_ranked` or `logo_candidates` decide what you look at -- a
+  premium hero is often a `used 0x`/`used 1x` render the ranking buries (this
+  is exactly how a deck once shipped with a tiny repeated accent while the
+  template's own white-studio medical renders sat unused). For every image you
+  plan to place, name its **background type**: clean transparent alpha / dark
   *charcoal* render / white *studio* photo. This is where the wrong mental
   model gets caught: "black-on-black is seamless" is FALSE -- most 3D renders
   sit on charcoal (~RGB 32,30,33), not pure black, and show a rectangle on a
@@ -499,7 +569,7 @@ cap 3 cycles per slide before you stop and reassess the design):
   placed or explicitly skipped (`meta.unplaced_material`); `tokens` cover
   every colour and font you will actually use; one idea per slide. A cheap
   "does the plan hold together" pass before you spend build effort.
-- **Loop C -- Per-slide critique** (after each slide builds). Look at the
+- **Loop C -- Per-slide critique** (after the first assembled-deck render). Look at the
   slide's **full-resolution** render and walk the rubric below element by
   element. Record the verdict in `meta.visual_review` (below).
 - **Loop D -- Deck consistency** (after the deck assembles). Look at the
@@ -519,13 +589,13 @@ cap 3 cycles per slide before you stop and reassess the design):
 
 Review only at **full resolution with targeted crops** -- never from one
 downscaled contact sheet, which is exactly how the collisions slipped
-through. `deck_qa.py` already writes full-size per-slide PNGs to
-`output/rendered/<stem>_qa/*.png`; from those, produce (ad-hoc, no new code
-required) the minimum evidence set: the full-size PNG of each slide, a crop
-of **each corner that carries a logo**, a crop of **each internal edge of
-each decorative image**, and a composite of any baked asset on the slide's
-actual background colour. Look at each one; do not conclude "pass" from the
-montage alone.
+through. `deck_qa.py` writes full-size per-slide PNGs to
+`<output-root>/rendered/<stem>_qa/*.png` and automatically writes logo-corner
+and internal image-edge crops plus `qa_crops/manifest.json`. Inspect every
+full-size page and every generated crop. Also inspect a composite of any baked
+asset on the slide's actual background colour. Crop automation prepares the
+evidence only; it does not replace deck-consistency review or the final
+adversarial pass, and a montage alone is never sufficient.
 
 ### Rubric for Loops C and E (the explicit checklist -- walk it every time)
 
@@ -545,6 +615,16 @@ montage alone.
   cannot make; only looking at the render can.
 - **Brand presence** -- does the theme's palette show up anywhere besides
   the logo?
+- **Hero visual present** -- does this slide carry a substantial premium
+  visual at the styleguide's `visual_ratio_target`, or is it text with a token
+  accent? A slide that trips `styleguide_visual_weight` and isn't a deliberate,
+  waived full-bleed statement is not done (see the build/lint/react gates).
+- **Treatment variety** -- across the deck, is this one motif repeated on
+  every slide, or is there dark/light rhythm and a distinct hero per slide?
+- **Signature accent used and legible** -- does the styleguide's accent (incl.
+  gold) actually appear, on a background where it reads (not gold-on-white)?
+- **Mark is the refined lockup, mark-sized** -- not a banner-scale wordmark,
+  identical on every slide.
 - **Seamless images** -- is any inserted image's rectangular boundary, crop
   box, or background edge visible? Does a photo/render's background tone
   mismatch the slide (a gray panel on white, a not-quite-black block on

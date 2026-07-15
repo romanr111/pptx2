@@ -172,6 +172,27 @@ def test_image_fit_modes(built):
     assert 'srcRect l="50000"/>' in xml
 
 
+def test_fitted_image_geometry_is_shared_for_contain_and_anchored_cover():
+    box = {"x": -100, "y": 0, "cx": 1000, "cy": 1000,
+           "allow_offslide_bleed": ["left"]}
+
+    contain = build_deck.fitted_image_geometry(
+        box, 100, 200, fit="contain", anchor="bottom"
+    )
+    cover = build_deck.fitted_image_geometry(
+        box, 200, 100, fit="cover", anchor="right"
+    )
+
+    assert contain["placed_box"] == {"x": 150, "y": 0, "cx": 500, "cy": 1000}
+    assert contain["source_crop"] == {
+        "left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0,
+    }
+    assert cover["placed_box"] == box
+    assert cover["source_crop"] == {
+        "left": 0.5, "right": 0.0, "top": 0.0, "bottom": 0.0,
+    }
+
+
 def test_shape_fill_gradient_and_line(built):
     _, _, xml = built
     assert "<a:gradFill" in xml

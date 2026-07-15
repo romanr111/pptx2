@@ -3,11 +3,12 @@
 react to without a reference screenshot to compare against.
 
 Usage:
-  lint_render.py specs/<name>.spec.json [--out PATH]
+  lint_render.py specs/<name>.spec.json [--static-only | --rendered-page PNG]
+    [--out PATH]
 
-Assumes `build_deck.py <spec> --states` has already produced
-output/<stem>.pptx (stem = spec filename with the .spec suffix stripped) --
-run that first if it hasn't.
+The no-flag legacy mode assumes `build_deck.py <spec> --states` has already
+produced output/<stem>.pptx. Deck QA uses the explicit static/rendered stages
+and never builds or converts standalone slide substitutes.
 
 Prints one JSON report to stdout (`--out` also writes it to a file):
   {"spec": str, "ok": bool, "counts": {"error": n, "warn": n},
@@ -33,8 +34,8 @@ import build_deck  # noqa: E402
 from imaging import line_bands  # noqa: E402
 from render import render  # noqa: E402
 
-from common import PROJECT_ROOT, EMU_PER_PX, EMU_PER_PT, PX_PER_PT
-OUT = PROJECT_ROOT / "output"
+from common import PROJECT_ROOT, EMU_PER_PX, EMU_PER_PT, PX_PER_PT, resolve_output_root
+OUT = resolve_output_root()
 ASSETS_JSON_PATH = PROJECT_ROOT / "out" / "assets.json"
 TEMPLATE_STYLE_JSON_PATH = PROJECT_ROOT / "out" / "template_style.json"
 STYLEGUIDE_PROFILE_JSON_PATH = PROJECT_ROOT / "out" / "styleguide_profile.json"
@@ -559,9 +560,21 @@ def check_render_structure(spec, spec_path, lookup, findings):
     try:
         ensure_fonts_installed(spec, lookup, findings)
         png_path = render(pptx_path, OUT / "lint_render_tmp")
-        img = np.asarray(Image.open(png_path).convert("RGB"))
     except Exception as e:
         findings.append(finding("warn", "render_structure", None, f"skipped: {e}"))
+        return
+
+    check_rendered_page(spec, png_path, findings)
+
+
+def check_rendered_page(spec, png_path, findings):
+    """Analyze text structure on an already-rendered assembled deck page."""
+    try:
+        img = np.asarray(Image.open(png_path).convert("RGB"))
+    except Exception as e:
+        findings.append(finding(
+            "error", "render_structure", None,
+            f"rendered page could not be read: {png_path}: {e}"))
         return
 
     sw, sh = spec["slide"]["width_emu"], spec["slide"]["height_emu"]
@@ -708,6 +721,21 @@ def _visual_area_ratio(spec):
     return min(1.0, visual_area / slide_area)
 
 
+# Aesthetic gates (common.STYLEGUIDE_GATE_CHECKS): the findings below block
+# deck_qa --delivery unless the designer records an explicit, reviewable
+# meta.styleguide_waiver. They stay warn-severity in standalone lint so the
+# build/lint/react loop isn't hard-blocked.
+def _styleguide_gate_finding(spec, check, where, message):
+    """warn by default; info (non-blocking, reason echoed) when
+    meta.styleguide_waiver explicitly waives this check. deck_qa --delivery
+    blocks on the unwaived warns and surfaces every waiver to the user."""
+    for w in spec.get("meta", {}).get("styleguide_waiver", []):
+        if isinstance(w, dict) and w.get("check") == check and w.get("reason"):
+            return finding("info", check, where,
+                           f"{message} [WAIVED: {w['reason']}]")
+    return finding("warn", check, where, message)
+
+
 def check_styleguide_application(spec, findings, styleguide):
     if not styleguide:
         return
@@ -726,15 +754,15 @@ def check_styleguide_application(spec, findings, styleguide):
 
     max_lines = styleguide.get("text_rules", {}).get("max_text_lines_per_slide")
     if max_lines and _text_line_count(spec) > max_lines:
-        findings.append(finding(
-            "warn", "styleguide_text_budget", "slide",
+        findings.append(_styleguide_gate_finding(
+            spec, "styleguide_text_budget", "slide",
             f"styleguide text budget is {max_lines} lines; spec has "
             f"{_text_line_count(spec)} text lines"))
 
     target_visual = styleguide.get("layout_rules", {}).get("visual_ratio_target")
     if target_visual and _visual_area_ratio(spec) < min(0.35, target_visual / 2):
-        findings.append(finding(
-            "warn", "styleguide_visual_weight", "slide",
+        findings.append(_styleguide_gate_finding(
+            spec, "styleguide_visual_weight", "slide",
             "styleguide expects a visual-led composition, but this spec has "
             "no substantial image/background/image_brief area"))
 
@@ -980,24 +1008,48 @@ def check_visual_review(spec, findings):
 
 # -------------------------------------------------------------------- main --
 
-def lint(spec_path: Path, deck_path: Path = None):
+def load_required_facts(path: Path, check: str, findings):
+    """Load a required inventory fact, reporting missing or invalid state."""
+    if not path.is_file():
+        findings.append(finding(
+            "error", f"facts_{check}_missing", None,
+            f"required facts file '{path}' is missing; run inventory before linting"))
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        findings.append(finding(
+            "error", f"facts_{check}_invalid", None,
+            f"required facts file '{path}' is not valid JSON; rerun inventory"))
+        return None
+
+
+def lint_static(spec_path: Path, deck_path: Path = None):
     """deck_path: the owning deck spec, when this slide is a deck member —
     supplies the deck's palette_roles / packaging context to the checks
     that would otherwise judge against the wrong standard. deck_qa.py
-    always passes it; standalone slide lint runs without it."""
+    always passes it; standalone slide lint runs without it.
+
+    This stage is deliberately side-effect free: it does not install fonts,
+    build a presentation, or invoke a renderer.
+    """
     spec = json.loads(spec_path.read_text())
     deck = json.loads(deck_path.read_text()) if deck_path else None
-    assets_json = json.loads(ASSETS_JSON_PATH.read_text())
-    template_style = json.loads(TEMPLATE_STYLE_JSON_PATH.read_text())
-    styleguide = {}
-    if STYLEGUIDE_PROFILE_JSON_PATH.is_file():
-        styleguide = json.loads(STYLEGUIDE_PROFILE_JSON_PATH.read_text())
-    lookup = font_lookup(assets_json)
     findings = []
 
     check_build_validate(spec, findings)
     if any(f["message"].startswith("schema:") for f in findings):
         return finalize(spec_path, findings)  # cross-checks below assume schema-valid shape
+
+    assets_json = load_required_facts(ASSETS_JSON_PATH, "assets", findings)
+    template_style = load_required_facts(TEMPLATE_STYLE_JSON_PATH, "template_style", findings)
+    if assets_json is None or template_style is None:
+        return finalize(spec_path, findings)
+
+    styleguide = {}
+    if STYLEGUIDE_PROFILE_JSON_PATH.is_file():
+        styleguide = json.loads(STYLEGUIDE_PROFILE_JSON_PATH.read_text())
+    lookup = font_lookup(assets_json)
 
     failed_fonts = check_font_conformance(spec, lookup, findings)
     check_glyph_coverage(spec, lookup, failed_fonts, findings)
@@ -1017,9 +1069,31 @@ def lint(spec_path: Path, deck_path: Path = None):
     check_visual_review(spec, findings)
     check_embed_font_licenses(spec, findings, deck=deck)
     check_font_embedding_decision(spec, lookup, findings, deck=deck)
-    check_render_structure(spec, spec_path, lookup, findings)
 
     return finalize(spec_path, findings)
+
+
+def lint(spec_path: Path, deck_path: Path = None):
+    """Run static checks plus the legacy standalone rendered-page check."""
+    report = lint_static(spec_path, deck_path=deck_path)
+    if not report["ok"]:
+        return report
+
+    spec = json.loads(spec_path.read_text())
+    assets_json = json.loads(ASSETS_JSON_PATH.read_text())
+    findings = list(report["findings"])
+    check_render_structure(spec, spec_path, font_lookup(assets_json), findings)
+    return finalize(spec_path, findings)
+
+
+def lint_rendered(spec_path: Path, rendered_page: Path):
+    """Run only render-dependent checks against one assembled deck page."""
+    spec = json.loads(spec_path.read_text())
+    findings = []
+    check_rendered_page(spec, rendered_page, findings)
+    report = finalize(spec_path, findings)
+    report["rendered_page"] = str(rendered_page)
+    return report
 
 
 def finalize(spec_path, findings):
@@ -1036,9 +1110,23 @@ def main():
                     help="owning deck spec (deck_qa passes this so palette/"
                          "packaging checks judge against the deck's own tokens)")
     ap.add_argument("--out", type=Path, default=None, help="also write the report JSON here")
+    ap.add_argument("--output-root", type=Path, default=None,
+                    help="root for built-slide and lint-render artifacts")
+    stage = ap.add_mutually_exclusive_group()
+    stage.add_argument("--static-only", action="store_true",
+                       help="run render-free checks only")
+    stage.add_argument("--rendered-page", type=Path, default=None,
+                       help="run render-dependent checks against this assembled page PNG")
     args = ap.parse_args()
 
-    report = lint(args.spec, deck_path=args.deck)
+    global OUT
+    OUT = resolve_output_root(args.output_root)
+    if args.rendered_page:
+        report = lint_rendered(args.spec, args.rendered_page)
+    elif args.static_only:
+        report = lint_static(args.spec, deck_path=args.deck)
+    else:
+        report = lint(args.spec, deck_path=args.deck)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     print(text)
     if args.out:

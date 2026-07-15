@@ -47,7 +47,8 @@ intermediate measurement artifacts that feed that pipeline's
 .venv/bin/python .claude/skills/pptx-deck/scripts/verify_reference.py
 ```
 
-Requires LibreOffice (`soffice` on PATH) for rendering. `extract_assets.py`
+Requires the Docker delivery renderer and Poppler (`pdftoppm` on PATH) for
+rendering. `extract_assets.py`
 takes ~90 s (template-matching the speaker photo); the others seconds.
 
 ## Tuning knobs

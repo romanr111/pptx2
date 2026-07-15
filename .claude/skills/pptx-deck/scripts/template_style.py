@@ -22,6 +22,8 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from common import PROJECT_ROOT
+from render import (_file_hash, _renderer_cache_key, conversion_command,
+                    resolve_renderer)
 DEFAULT_TEMPLATE = PROJECT_ROOT / "assets" / "template.pptx"
 OUT = PROJECT_ROOT / "out"
 THUMB_DIR = OUT / "thumbnails" / "template"
@@ -358,26 +360,130 @@ def extract_animation_exemplars(z, names):
     return exemplars
 
 
-def render_thumbnails(template_path):
-    THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    pdf_dir = OUT / "thumbnails" / "_tmp_pdf"
+def render_thumbnails(template_path, renderer=None):
+    """Render template thumbnails with the delivery renderer by default."""
+    renderer = resolve_renderer(renderer)
+    cache_key = (f"{template_path.stem}_{_file_hash(template_path)}_"
+                 f"{_renderer_cache_key(renderer)}")
+    thumbnail_dir = THUMB_DIR / cache_key
+    thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    pdf_dir = OUT / "thumbnails" / "_tmp_pdf" / cache_key
     pdf_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = pdf_dir / (template_path.stem + ".pdf")
     if not pdf_path.exists():
         subprocess.run(
-            ["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir),
-             str(template_path)],
+            conversion_command(template_path, pdf_dir, "pdf", renderer=renderer),
             check=True, capture_output=True, timeout=300)
-    existing = sorted(THUMB_DIR.glob("slide-*.png"))
+    existing = sorted(thumbnail_dir.glob("slide-*.png"))
     if not existing:
         subprocess.run(
-            ["pdftoppm", "-png", "-r", "80", str(pdf_path), str(THUMB_DIR / "slide")],
+            ["pdftoppm", "-png", "-r", "80", str(pdf_path), str(thumbnail_dir / "slide")],
             check=True, capture_output=True, timeout=300)
-        existing = sorted(THUMB_DIR.glob("slide-*.png"))
+        existing = sorted(thumbnail_dir.glob("slide-*.png"))
     return [str(p.relative_to(PROJECT_ROOT)) for p in existing]
 
 
-def extract(template_path=DEFAULT_TEMPLATE, with_thumbnails=True):
+MEDIA_CENSUS_DIR = OUT / "media_census"
+MEDIA_CENSUS_SHEET = OUT / "media_census.png"
+_MEDIA_RE = re.compile(r"ppt/media/[^/]+\.(png|jpg|jpeg|gif|bmp|tif|tiff|webp)$", re.I)
+
+
+def _checker(size, sq=16):
+    """A light checkerboard so transparent-alpha tiles read on the sheet."""
+    yy, xx = np.mgrid[0:size, 0:size]
+    mask = ((xx // sq + yy // sq) % 2).astype(bool)
+    base = np.empty((size, size, 4), dtype=np.uint8)
+    base[...] = (206, 206, 210, 255)
+    base[mask] = (172, 172, 176, 255)
+    return Image.fromarray(base, "RGBA")
+
+
+def _write_media_contact_sheet(tiles, sheet_path, cols=4, cell=256, cap=48, pad=14):
+    """One labeled grid of every template image (basename, WxH, reuse count)."""
+    from PIL import ImageDraw, ImageFont
+    if not tiles:
+        return
+    try:
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
+    checker = _checker(cell)
+    rows = (len(tiles) + cols - 1) // cols
+    cw, ch = cell + pad, cell + cap + pad
+    sheet = Image.new("RGB", (cols * cw + pad, rows * ch + pad), (44, 44, 48))
+    draw = ImageDraw.Draw(sheet)
+    for i, (base, entry, im) in enumerate(tiles):
+        r, c = divmod(i, cols)
+        x0, y0 = pad + c * cw, pad + r * ch
+        thumb = im.copy()
+        thumb.thumbnail((cell, cell))
+        tilebg = checker.copy()
+        tilebg.alpha_composite(thumb, ((cell - thumb.width) // 2,
+                                       (cell - thumb.height) // 2))
+        sheet.paste(tilebg.convert("RGB"), (x0, y0))
+        size = entry.get("size")
+        caption = (f"{base}\n{size[0]}x{size[1]}  used {entry['n_slides_used']}x"
+                   if size else f"{base}\n(unreadable)")
+        if font is not None:
+            draw.multiline_text((x0 + 1, y0 + cell + 4), caption,
+                                fill=(236, 236, 240), font=font, spacing=3)
+    sheet_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(sheet_path)
+
+
+def dump_media_census(z, names, slide_media_map, out_dir=MEDIA_CENSUS_DIR,
+                      sheet_path=MEDIA_CENSUS_SHEET):
+    """Extract EVERY embedded template image and build one labeled contact
+    sheet, so the designer surveys the full media library instead of a
+    ranked/logo-filtered subset. (classify_logo_media only looks at
+    `image\\d+.png`; that filter once hid the template's premium white-studio
+    `.jpg` renders.) Writes out/media_census/<name> + out/media_census.png and
+    returns a per-file census list. media_reuse_ranked is a discovery hint,
+    never a filter -- one-off content is often the best hero.
+    """
+    out_dir, sheet_path = Path(out_dir), Path(sheet_path)
+    used_on = {}
+    for slide, media in slide_media_map.items():
+        for m in media:
+            used_on.setdefault(m, []).append(slide.split("/")[-1])
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    census, tiles = [], []
+    for n in sorted(x for x in names if _MEDIA_RE.match(x)):
+        data = zip_read(z, n)
+        if data is None:
+            continue
+        base = n.split("/")[-1]
+        (out_dir / base).write_bytes(data)
+        entry = {
+            "media": n,
+            "file": f"out/media_census/{base}",
+            "ext": base.rsplit(".", 1)[-1].lower(),
+            "n_slides_used": len(used_on.get(n, [])),
+            "used_on_slides": sorted(used_on.get(n, [])),
+            "size": None, "mode": None, "has_alpha": None,
+        }
+        try:
+            with Image.open(io.BytesIO(data)) as im:
+                entry["size"] = list(im.size)
+                entry["mode"] = im.mode
+                entry["has_alpha"] = (im.mode in ("RGBA", "LA")
+                                      or "transparency" in im.info)
+                # Downscale to the tile size BEFORE holding it: template media
+                # can be enormous (15124x8538 here), and keeping full-res RGBA
+                # copies of every image at once would blow memory.
+                thumb = im.convert("RGBA")
+                thumb.thumbnail((256, 256))
+                tiles.append((base, entry, thumb))
+        except Exception:
+            pass
+        census.append(entry)
+
+    _write_media_contact_sheet(tiles, sheet_path)
+    return census
+
+
+def extract(template_path=DEFAULT_TEMPLATE, with_thumbnails=True, renderer=None):
     prs = Presentation(str(template_path))
     layouts = extract_layout_geometry(prs)
     margins = infer_margins(layouts)
@@ -391,9 +497,13 @@ def extract(template_path=DEFAULT_TEMPLATE, with_thumbnails=True):
         slide_media_map = map_slides_to_media(z, names)
         media_reuse_ranked = rank_media_reuse(slide_media_map)
         slide_layout_map = map_slides_to_layouts(z, names, layouts)
+        # Full media census (all formats, not the logo/reuse-ranked subset) so
+        # the designer surveys every template image, not a filtered slice.
+        media_census = dump_media_census(z, names, slide_media_map)
 
     style = {
         "template_file": template_path.name,
+        "template_fingerprint": _file_hash(template_path),
         "slide_size_emu": {"width": prs.slide_width, "height": prs.slide_height},
         "themes": themes,
         "consistency_flags": (
@@ -416,9 +526,11 @@ def extract(template_path=DEFAULT_TEMPLATE, with_thumbnails=True):
         "slide_layout_map": slide_layout_map,
         "slide_media_map": slide_media_map,
         "media_reuse_ranked": media_reuse_ranked,
+        "media_census": media_census,
+        "media_census_sheet": "out/media_census.png",
     }
     if with_thumbnails:
-        style["thumbnails"] = render_thumbnails(template_path)
+        style["thumbnails"] = render_thumbnails(template_path, renderer=renderer)
     return style
 
 

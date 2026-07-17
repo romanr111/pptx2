@@ -324,10 +324,19 @@ abrupt clip, or a background tone that mismatches the slide (a light-gray
 instantly reads as amateur. This is not lint-checkable -- it is a hard visual-
 review gate. Rules:
 
-1. **Prefer clean transparent-alpha PNGs.** Molecular/3D renders and cutout
-   portraits with a real alpha channel dissolve for free -- verify the alpha
-   is clean (fully transparent outside the subject, no rectangular matte;
-   sample the corners). These need no further work beyond overscan (below).
+1. **A "transparent" PNG is NOT automatically seamless -- verify, never assume
+   "dissolves for free".** A real alpha channel often does dissolve, but
+   template renders frequently carry an **opaque corner-glow/vignette** (baked
+   into RGB at high alpha -- inside the box, not "outside the subject") or a
+   **semi-transparent AO/shadow haze** over the whole frame; either draws the
+   image's rectangular bounding box on a uniform slide. Sampling corners is
+   necessary but not sufficient -- confirm each corner is genuinely transparent
+   (low alpha AND no coloured glow). When any doubt remains, bake the inner
+   edges anyway: `seamless_hero.py --bg none --feather <inner edges>` keeps the
+   subject's own alpha and just dissolves the box edges (`--bg black`/`--bg
+   white` on an already-alpha source drops the alpha and grunges the subject,
+   so use `--bg none` for clean-alpha PNGs). Then overscan the outer edges
+   off-slide (below).
 2. **A solid-background source (white/gray/black JPG) is never placed as a
    panel as-is.** Its internal edge *will* show. Bake a seamless derivative
    with `pptx-deck`'s `seamless_hero.py`: (a) **match the
@@ -350,10 +359,16 @@ review gate. Rules:
 4. **Preserve the main subject at full clarity** -- fade only near the
    integration edges. Crop the source so shadows/dark corners/foreign objects
    fall in the feathered or bled zone, not in the visible center.
-5. **Always confirm in the render, not the spec.** Composite the baked asset
-   on the exact slide background colour and look for any tonal block or line;
-   iterate the whiten threshold and feather width until the transition is
-   invisible.
+5. **Confirm seamlessness deterministically -- a clean LibreOffice/Docker
+   render is NOT proof.** The renderer *masks* an inserted image's bounding-box
+   edge, so it can appear only in PowerPoint/Keynote (shipped once: a raw
+   transparent helix looked perfect in the LO render but drew a visible box in
+   the owner's PowerPoint). Don't trust the assembled render alone -- for every
+   `fit:"stretch"` decorative image, sample the baked asset's inner-edge
+   rows/columns and confirm they equal the slide surface colour, and set the
+   slide surface to the *exact* bake colour (pure `#000000` to match `--bg
+   black`, `#FFFFFF` to match `--bg white`) so no tonal rectangle can remain.
+   Iterate the threshold and feather width until the transition is invisible.
 
 **Decorative accent shapes.** When a composition has a large plain region
 that isn't carrying content (see "Hero/thematic imagery"), and no
